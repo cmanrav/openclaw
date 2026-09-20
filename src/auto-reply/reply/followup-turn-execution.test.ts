@@ -3,6 +3,7 @@ import type { ReplyPayload } from "../types.js";
 import type { AgentTurnParams } from "./agent-runner-execution.types.js";
 import type { AdmittedFollowupTurn } from "./followup-turn-admission.js";
 import { markReplyOperationExecutionStarted } from "./reply-run-registry.state.js";
+import { createMockReplyOperation } from "./test-helpers.js";
 
 const state = vi.hoisted(() => ({
   execute: vi.fn(),
@@ -67,7 +68,7 @@ function createTurn(overrides: Partial<AdmittedFollowupTurn> = {}): AdmittedFoll
         blockReplyBreak: "message_end",
       },
     },
-    operation: { abortSignal: new AbortController().signal } as AdmittedFollowupTurn["operation"],
+    operation: createMockReplyOperation().replyOperation,
     config: {},
     session: {
       kind: "session",
@@ -775,7 +776,7 @@ describe("executeFollowupTurn", () => {
     const updateSessionId = vi.fn();
     const turn = createTurn({
       operation: {
-        abortSignal: new AbortController().signal,
+        ...createMockReplyOperation().replyOperation,
         updateSessionId,
       } as unknown as AdmittedFollowupTurn["operation"],
     });
@@ -837,7 +838,7 @@ describe("executeFollowupTurn", () => {
     const onItemEvent = vi.fn(async () => {});
     const fail = vi.fn();
     const operation = {
-      abortSignal: new AbortController().signal,
+      ...createMockReplyOperation().replyOperation,
       fail,
     } as unknown as AdmittedFollowupTurn["operation"];
     const turn = createTurn({ operation });

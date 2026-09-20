@@ -67,6 +67,32 @@ export function logMessageQueuedWithBacklogPolicy(
   markDiagnosticActivity();
 }
 
+/**
+ * Records a steer that was demoted to an ordinary followup.
+ *
+ * Demotion is invisible on chat surfaces and its reason was verbose-only, while
+ * the predecessor-cascade path recorded nothing at all. Without this an operator
+ * cannot tell why steering stopped taking effect on a busy session.
+ */
+export function logSteerDemotedToFollowup(
+  params: SessionRef & { channel?: string; reason: string },
+): void {
+  if (!areDiagnosticsEnabledForProcess()) {
+    return;
+  }
+  const state = getDiagnosticSessionState(params);
+  state.lastActivity = Date.now();
+  // Closed-set reason code only. Prompt text and credentials never reach here,
+  // and no queued event is emitted so followup accounting stays single-counted.
+  diag.info("steer demoted to followup", {
+    sessionId: state.sessionId ?? "unknown",
+    sessionKey: state.sessionKey ?? "unknown",
+    channel: params.channel,
+    reason: params.reason,
+  });
+  markDiagnosticActivity();
+}
+
 /** Logs and emits a diagnostic event when work enters a serialized lane. */
 export function logLaneEnqueue(lane: string, queueSize: number): void {
   if (!areDiagnosticsEnabledForProcess()) {

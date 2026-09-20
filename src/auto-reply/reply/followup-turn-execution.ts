@@ -13,6 +13,10 @@ import { requiresDurableToolResultDelivery } from "./dispatch-from-config.payloa
 import type { AdmittedFollowupTurn, FollowupRunnerParams } from "./followup-turn-admission.js";
 import type { InternalGetReplyOptions } from "./get-reply.types.js";
 import { hasReplyOperationExecutionStarted } from "./reply-run-registry.js";
+import {
+  createFollowupRunToolAuthorityProjector,
+  resolveFollowupRunToolAuthorityFingerprint,
+} from "./reply-tool-authority.js";
 import { createTypingSignaler, type TypingSignaler } from "./typing-mode.js";
 
 export type FollowupExecutionResult = {
@@ -315,6 +319,16 @@ export async function executeFollowupTurn(params: {
     };
   } else {
     try {
+      // A drained turn owns the reply slot while it executes. Without this the
+      // steering gate reads a still-"queued" phase and demotes every inbound
+      // message to a followup that waits out the whole run.
+      turn.operation.bindToolAuthorityProjector(
+        createFollowupRunToolAuthorityProjector(turn.queued),
+      );
+      turn.operation.bindToolAuthorityFingerprint(
+        resolveFollowupRunToolAuthorityFingerprint(turn.queued),
+      );
+      turn.operation.setPhase("running");
       const execute = () =>
         executeAgentTurn({
           commandBody: turn.queued.prompt,

@@ -23,6 +23,7 @@ import {
   shouldIncludeProgressCardToolForOpenClawTools,
   shouldIncludeSecretsToolForOpenClawTools,
 } from "./openclaw-tools.registration.js";
+import { isToolResultError } from "./tool-result-error.js";
 import { textResult, type AnyAgentTool } from "./tools/common.js";
 import { createPdfTool } from "./tools/pdf-tool.js";
 
@@ -692,9 +693,12 @@ describe("sessions_yield completion ownership", () => {
 
       const result = await tool.execute("yield-requester", {});
 
+      // A main session with no spawned children has nothing to wait for. That must
+      // redirect the model, not fail: a failure surfaces "⚠️ Yield failed".
+      expect(isToolResultError(result)).toBe(false);
       expect(result.details).toMatchObject({
-        status: "error",
-        error:
+        status: "not_yielded",
+        reason:
           "No pending child completion is owned by this turn. Continue working because independent background operations complete separately.",
       });
       expect(markRequesterTurnYielded).toHaveBeenCalledOnce();

@@ -7,7 +7,7 @@ import { Type } from "typebox";
 import type { AnyAgentTool } from "./common.js";
 import { jsonResult, readToolStringParam } from "./common.js";
 
-const NO_PENDING_CHILD_COMPLETION_ERROR =
+const NO_PENDING_CHILD_COMPLETION_REASON =
   "No pending child completion is owned by this turn. Continue working because independent background operations complete separately.";
 
 const SessionsYieldToolSchema = Type.Object({
@@ -47,9 +47,12 @@ export function createSessionsYieldTool(opts?: {
         return jsonResult({ status: "error", error: "Yield not supported in this context" });
       }
       if (!(await opts.claimYield?.())) {
+        // Nothing to wait for redirects the model back to work; it is not a failure.
+        // An error result becomes the turn's last tool error and, when the turn has
+        // no reply of its own, surfaces "⚠️ Yield failed" to the user.
         return jsonResult({
-          status: "error",
-          error: NO_PENDING_CHILD_COMPLETION_ERROR,
+          status: "not_yielded",
+          reason: NO_PENDING_CHILD_COMPLETION_REASON,
         });
       }
       // The runtime owns the actual pause/end-turn behavior; this tool records intent.

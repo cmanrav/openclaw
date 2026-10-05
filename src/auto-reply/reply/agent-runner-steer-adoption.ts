@@ -3,6 +3,7 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import { isIngressAdoptionLostError } from "../../channels/message/ingress-drain.js";
 import { logVerbose } from "../../globals.js";
 import { formatErrorMessage } from "../../infra/errors.js";
+import { logSteerDemotedToFollowup } from "../../logging/diagnostic-runtime.js";
 import {
   scheduleFollowupDrainAfterReplyOperationClear,
   type RunReplyAgentParams,
@@ -115,14 +116,20 @@ export async function runActiveReplySteer(params: ActiveReplySteerParams): Promi
   };
   scheduleParkedFallback();
   releaseAdmissionTicket();
-  const fallback = async (reason?: string): Promise<"handled"> => {
+  // Reason is required: a demotion that records nothing leaves an operator
+  // unable to tell steering from an ordinary followup after the fact.
+  const fallback = async (reason: string): Promise<"handled"> => {
     parked.fallback();
     if (replyOperationRunState) {
       replyOperationRunState.admission = { status: "accepted", mode: "followup" };
     }
-    if (reason) {
-      logVerbose(`queue: active session ${steerSessionId} rejected steering (${reason})`);
-    }
+    logVerbose(`queue: active session ${steerSessionId} rejected steering (${reason})`);
+    logSteerDemotedToFollowup({
+      sessionId: steerSessionId,
+      sessionKey: followupRun.run.sessionKey,
+      channel: followupRun.originatingChannel ?? followupRun.run.messageProvider,
+      reason,
+    });
     await touchActiveSessionEntry();
     typing.cleanup();
     return "handled";
@@ -135,7 +142,9 @@ export async function runActiveReplySteer(params: ActiveReplySteerParams): Promi
       return "handled";
     }
     if (admission === "fallback") {
-      return await fallback();
+      // Predecessor-cascade: an earlier steer on this session was rejected, so
+      // this one never attempts its own injection.
+      return await fallback("steer predecessor rejected");
     }
     if (!injectionTarget) {
       return await fallback("no injectable reply operation");

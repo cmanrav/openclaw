@@ -421,7 +421,7 @@ describe("gateway server chat", () => {
     });
   });
 
-  test("delivers a queued WebChat reply over the live Gateway WebSocket after its source ends", async () => {
+  test("steers a running queued turn over the live Gateway WebSocket and delivers its reply", async () => {
     await withMainSessionStore(async () => {
       let options: InternalGetReplyOptions | undefined;
       const releaseDispatch = createDeferred();
@@ -451,6 +451,38 @@ describe("gateway server chat", () => {
       await waitForFast(() => expect(options?.onQueuedFollowupReplyBatch).toBeTypeOf("function"));
       releaseDispatch.resolve();
       await sourceFinal;
+      options?.turnAdoptionLifecycle?.onSettled?.();
+
+      const authorityFingerprint = "gateway-webchat-steering-authority";
+      const queueMessage = vi.fn(async () => {});
+      const operation = replyRunRegistry.begin({
+        sessionKey: "agent:main:main",
+        sessionId: "sess-main",
+        resetTriggered: false,
+      });
+      operation.bindToolAuthorityProjector(() => authorityFingerprint);
+      operation.bindToolAuthorityFingerprint(authorityFingerprint);
+      operation.bindToolAuthorityRoute({ provider: "openai", model: "gpt-5.6-sol" });
+      operation.setPhase("running");
+      operation.attachBackend({
+        kind: "embedded",
+        runId: "live-webchat-queued-turn",
+        cancel: () => {},
+        queueMessage,
+      });
+
+      const steerResponse = await rpcReq(ws, "chat.send", {
+        sessionKey: "main",
+        message: "Use the revised request",
+        queueMode: "steer",
+        idempotencyKey: "idem-live-webchat-steer-queued-turn",
+      });
+      expect(steerResponse.ok).toBe(true);
+      expect(queueMessage).toHaveBeenCalledOnce();
+      expect(queueMessage).toHaveBeenCalledWith(
+        "Use the revised request",
+        expect.objectContaining({ isInboundUserMessage: true }),
+      );
 
       const followupRunId = "idem-live-webchat-late-followup";
       const queuedFinal = onceMessage(
@@ -466,12 +498,12 @@ describe("gateway server chat", () => {
         kind: "queued-followup",
         runId: followupRunId,
         originatingChannel: "webchat",
-        payloads: [{ text: "late answer arrived over the live WebSocket" }],
+        payloads: [{ text: "steered answer: Use the revised request" }],
       });
       expect((await queuedFinal).payload?.message).toMatchObject({
-        content: [{ type: "text", text: "late answer arrived over the live WebSocket" }],
+        content: [{ type: "text", text: "steered answer: Use the revised request" }],
       });
-      options?.turnAdoptionLifecycle?.onSettled?.();
+      operation.complete();
     });
   });
 

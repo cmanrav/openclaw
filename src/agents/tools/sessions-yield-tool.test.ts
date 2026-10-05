@@ -1,6 +1,7 @@
 // sessions_yield tool tests cover cooperative turn yielding and unsupported
 // context errors.
 import { describe, expect, it, vi } from "vitest";
+import { isToolResultError } from "../tool-result-error.js";
 import { createSessionsYieldTool } from "./sessions-yield-tool.js";
 
 type SessionsYieldDetails = {
@@ -8,6 +9,7 @@ type SessionsYieldDetails = {
   message?: string;
   acknowledgment?: string;
   error?: string;
+  reason?: string;
 };
 
 describe("sessions_yield tool", () => {
@@ -113,7 +115,7 @@ describe("sessions_yield tool", () => {
   it.each([
     { name: "the claim callback is unavailable" },
     { name: "the turn owns no pending child completion", claimYield: () => false },
-  ])("keeps the turn active when $name", async ({ claimYield }) => {
+  ])("keeps the turn active without a failure warning when $name", async ({ claimYield }) => {
     const onYield = vi.fn();
     const tool = createSessionsYieldTool({
       sessionId: "test-session",
@@ -123,9 +125,12 @@ describe("sessions_yield tool", () => {
 
     const result = await tool.execute("call-1", {});
 
+    // Nothing to wait for redirects the model; it is not a failure. A failure
+    // result becomes the turn's last tool error and surfaces "⚠️ Yield failed".
+    expect(isToolResultError(result)).toBe(false);
     expect(result.details).toMatchObject({
-      status: "error",
-      error:
+      status: "not_yielded",
+      reason:
         "No pending child completion is owned by this turn. Continue working because independent background operations complete separately.",
     });
     expect(onYield).not.toHaveBeenCalled();

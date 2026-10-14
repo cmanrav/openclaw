@@ -30,6 +30,12 @@ const OPTIONAL_UNDECLARED_RUNTIME_IMPORTS = new Map<string, Set<string>>([
 ]);
 const INDIRECT_RUNTIME_DEPENDENCIES = new Map<string, Set<string>>([
   [
+    "extensions/acpx",
+    // acpx -> tsx uses this optional watcher. Explicit optional ownership prevents
+    // npm global bundle loading from promoting it to a required dependency.
+    new Set(["fsevents"]),
+  ],
+  [
     "extensions/browser",
     // The MCP SDK loads zod through its server/zod-compat runtime path.
     new Set(["zod"]),

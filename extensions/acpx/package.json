@@ -18,6 +18,9 @@
   "devDependencies": {
     "@openclaw/plugin-sdk": "workspace:*"
   },
+  "optionalDependencies": {
+    "fsevents": "2.3.3"
+  },
   "openclaw": {
     "extensions": [
       "./index.ts"

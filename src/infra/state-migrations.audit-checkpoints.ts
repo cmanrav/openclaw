@@ -3,7 +3,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { statRegularFileSync } from "@openclaw/fs-safe/advanced";
 import { sha256FileSync } from "@openclaw/fs-safe/durability";
+import { withExistingOpenClawStateDatabaseReadOnly } from "../state/openclaw-state-db-readonly.js";
 import { createSqliteAuditRecordStore } from "./sqlite-audit-record-store.js";
+import { createSqliteAuditRecordKernel } from "./sqlite-audit-record.kernel.js";
 import type {
   LegacyAuditLogSource,
   LegacyAuditLogsDetection,
@@ -40,11 +42,20 @@ export function legacyAuditSourceGenerationKey(rawArchiveRelativePath: string): 
 }
 
 export function openLegacyAuditRawCheckpointStore(stateDir: string) {
-  return createSqliteAuditRecordStore<LegacyAuditRawCheckpoint>({
+  const options = {
     scope: LEGACY_AUDIT_RAW_CHECKPOINT_SCOPE,
     maxEntries: LEGACY_AUDIT_RAW_CHECKPOINT_MAX_ENTRIES,
     env: { ...process.env, OPENCLAW_STATE_DIR: stateDir },
-  });
+  };
+  return {
+    ...createSqliteAuditRecordStore<LegacyAuditRawCheckpoint>(options),
+    // Backup discovery must read original checkpoints without initializing or migrating a store.
+    entries: () =>
+      withExistingOpenClawStateDatabaseReadOnly(
+        ({ db }) => createSqliteAuditRecordKernel<LegacyAuditRawCheckpoint>(db, options).entries(),
+        options,
+      ) ?? [],
+  };
 }
 
 export function hasLegacyAuditRawCheckpointCapacity(

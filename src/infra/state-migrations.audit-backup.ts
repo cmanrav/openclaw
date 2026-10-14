@@ -4,14 +4,20 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { CONFIG_AUDIT_SCOPE } from "../config/io.audit.js";
-import { withExistingOpenClawStateDatabaseReadOnly } from "../state/openclaw-state-db-readonly.js";
+import { OPENCLAW_STATE_SCHEMA_VERSION } from "../state/openclaw-state-db-contract.js";
+import {
+  withExistingOpenClawStateDatabaseReadOnly,
+  withOpenClawStateDatabaseReadSnapshot,
+} from "../state/openclaw-state-db-readonly.js";
 import { SYSTEM_AGENT_AUDIT_SCOPE } from "../system-agent/audit.js";
 import { root as createFsSafeRoot } from "./fs-safe.js";
+import { readSqliteUserVersion } from "./sqlite-user-version.js";
 import {
   detectLegacyAuditLogs,
   legacyAuditSourceGenerationKey,
   type LegacyAuditRawCheckpoint,
 } from "./state-migrations.audit-checkpoints.js";
+import { withLegacyAuditMigrationLease } from "./state-migrations.audit-coordination.js";
 import { legacyAuditMoveCandidates } from "./state-migrations.audit-moves.js";
 import {
   prepareLegacyAuditRecords,
@@ -252,4 +258,26 @@ export async function createLegacyAuditBackupCapture(params: {
       env: { ...process.env, OPENCLAW_STATE_DIR: params.stateDir },
     }) ?? createHash("sha256").digest("hex");
   return { ...capture, databaseWitness };
+}
+
+/** Older stores must be backed up before any writer can advance their schema. */
+export async function captureLegacyAuditForBackup(params: {
+  stateDir: string;
+  tempDir: string;
+}): Promise<LegacyAuditBackupCapture> {
+  const sourceVersion = withExistingOpenClawStateDatabaseReadOnly(
+    ({ db }) => readSqliteUserVersion(db),
+    { env: { ...process.env, OPENCLAW_STATE_DIR: params.stateDir } },
+  );
+  const capture = () =>
+    withOpenClawStateDatabaseReadSnapshot(() => createLegacyAuditBackupCapture(params), {
+      env: { ...process.env, OPENCLAW_STATE_DIR: params.stateDir },
+    });
+  if (sourceVersion === OPENCLAW_STATE_SCHEMA_VERSION) {
+    return withLegacyAuditMigrationLease(params.stateDir, capture);
+  }
+  // A write lease would migrate an older source. The archive owner instead binds both
+  // read-only captures to the private SQLite image and rejects changed audit witnesses.
+  // The bounded retry/fail-closed path remains in createConsistentStateSnapshotPlan.
+  return capture();
 }

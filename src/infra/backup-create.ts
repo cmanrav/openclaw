@@ -60,12 +60,11 @@ import { writeTarArchiveWithRetry } from "./backup-tar-retry.js";
 import { walkBackupTar } from "./backup-tar-walk.js";
 import { isErrno } from "./errors.js";
 import {
-  createLegacyAuditBackupCapture,
+  captureLegacyAuditForBackup,
   legacyAuditBackupCapturesMatch,
   LegacyAuditBackupStateChangedError,
   type LegacyAuditBackupSnapshot,
 } from "./state-migrations.audit-backup.js";
-import { withLegacyAuditMigrationLease } from "./state-migrations.audit-coordination.js";
 import { isUpdateCapturePath } from "./update-capture-paths.js";
 
 const loadTarRuntime = createLazyRuntimeModule(() => import("tar"));
@@ -306,7 +305,7 @@ async function createConsistentStateSnapshotPlan(params: {
 }): Promise<ConsistentStateSnapshotPlan> {
   const captureSqlite = (
     tempDir: string,
-    audit?: Awaited<ReturnType<typeof createLegacyAuditBackupCapture>>,
+    audit?: Awaited<ReturnType<typeof captureLegacyAuditForBackup>>,
   ) =>
     createBackupSqliteSnapshotPlan({
       resources: params.resources,
@@ -344,14 +343,13 @@ async function createConsistentStateSnapshotPlan(params: {
     const verificationDir = path.join(attemptDir, "legacy-verification");
     await fs.mkdir(attemptDir, { recursive: true });
     try {
-      const firstCapture = await withLegacyAuditMigrationLease(stateDir, () =>
-        createLegacyAuditBackupCapture({ stateDir, tempDir: attemptDir }),
-      );
+      const firstCapture = await captureLegacyAuditForBackup({ stateDir, tempDir: attemptDir });
       const stateSqliteBackup = await captureSqlite(attemptDir, firstCapture);
       await fs.mkdir(verificationDir, { recursive: true });
-      const secondCapture = await withLegacyAuditMigrationLease(stateDir, () =>
-        createLegacyAuditBackupCapture({ stateDir, tempDir: verificationDir }),
-      );
+      const secondCapture = await captureLegacyAuditForBackup({
+        stateDir,
+        tempDir: verificationDir,
+      });
       if (!legacyAuditBackupCapturesMatch(firstCapture, secondCapture)) {
         throw new LegacyAuditBackupStateChangedError();
       }

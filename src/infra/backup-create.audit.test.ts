@@ -1,9 +1,11 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import * as tar from "tar";
 import { describe, expect, it, vi } from "vitest";
 import { backupRestoreCommand } from "../commands/backup-restore.js";
+import { verifyBackupArchive } from "../commands/backup-verify.js";
 import { CONFIG_AUDIT_MAX_ENTRIES, CONFIG_AUDIT_SCOPE } from "../config/io.audit.js";
 import { EMPTY_LEGACY_SESSION_SURFACES } from "../plugins/legacy-session-surfaces.types.js";
 import type { RuntimeEnv } from "../runtime.js";
@@ -12,6 +14,7 @@ import {
   closeOpenClawStateDatabase,
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
+import * as stateDatabase from "../state/openclaw-state-db.js";
 import {
   withOpenClawTestState,
   type OpenClawTestState,
@@ -236,6 +239,110 @@ describe("legacy audit portable backups", () => {
 });
 
 describe("backup legacy audit capture boundary", () => {
+  it("backs up an older owned store and raw audit without opening a writer or migrating it", async () => {
+    await withAuditState(async (state) => {
+      await state.writeConfig({ plugins: { enabled: false } });
+      const databasePath = state.statePath("state", "openclaw.sqlite");
+      await fs.mkdir(path.dirname(databasePath), { recursive: true });
+      closeOpenClawStateDatabase();
+      const database = new (requireNodeSqlite().DatabaseSync)(databasePath);
+      // Original schema17 table shapes, not a current store with a decremented marker.
+      database.exec(`
+        CREATE TABLE schema_meta (
+          meta_key TEXT PRIMARY KEY, role TEXT NOT NULL, schema_version INTEGER NOT NULL,
+          agent_id TEXT, app_version TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+        ) STRICT;
+        INSERT INTO schema_meta VALUES ('primary', 'global', 17, NULL, '2026.9.4', 1, 1);
+        PRAGMA user_version = 17;
+        CREATE TABLE diagnostic_events (
+          scope TEXT NOT NULL, event_key TEXT NOT NULL, payload_json TEXT NOT NULL,
+          created_at INTEGER NOT NULL, sequence INTEGER NOT NULL DEFAULT 0,
+          PRIMARY KEY (scope, event_key)
+        ) STRICT;
+        CREATE TABLE agent_databases (
+          agent_id TEXT NOT NULL, path TEXT NOT NULL, schema_version INTEGER NOT NULL,
+          last_seen_at INTEGER NOT NULL, size_bytes INTEGER, PRIMARY KEY (agent_id, path)
+        ) STRICT;
+        CREATE TABLE state_leases (
+          scope TEXT NOT NULL, lease_key TEXT NOT NULL, owner TEXT NOT NULL,
+          expires_at INTEGER, heartbeat_at INTEGER, payload_json TEXT,
+          created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+          PRIMARY KEY (scope, lease_key)
+        ) STRICT;
+      `);
+      database.close();
+      const rawPath = "logs/config-audit.jsonl.migrated.raw";
+      await state.writeText(rawPath, `${JSON.stringify(auditRecord("safe", "older-store"))}\n`);
+      const linkPath = state.statePath("absolute-workspace-link");
+      await fs.symlink(state.workspaceDir, linkPath);
+      const originalBytes = await fs.readFile(databasePath);
+      const originalHash = createHash("sha256").update(originalBytes).digest("hex");
+      // Isolation: emulate the live owner's refusal of every writable open/transaction.
+      const writer = vi.spyOn(stateDatabase, "openOpenClawStateDatabase").mockImplementation(() => {
+        throw new Error("Backup attempted a writable open of the older source");
+      });
+      // Isolation: the older live owner also rejects transaction entry, independently of opens.
+      const transaction = vi
+        .spyOn(stateDatabase, "runOpenClawStateWriteTransaction")
+        .mockImplementation(() => {
+          throw new Error("Backup attempted a writable transaction on the older source");
+        });
+      try {
+        const result = await createBackupArchive({
+          output: state.path("older-store.tar.gz"),
+          includeWorkspace: false,
+          verify: true,
+        });
+        const verification = await verifyBackupArchive(result.archivePath);
+        expect(verification.ok).toBe(true);
+        expect(writer).not.toHaveBeenCalled();
+        expect(transaction).not.toHaveBeenCalled();
+        const runtime: RuntimeEnv = { log: vi.fn(), error: vi.fn(), exit: vi.fn() };
+        const restored = await backupRestoreCommand(runtime, {
+          archive: result.archivePath,
+          target: state.path("restored-older-store"),
+        });
+        // SAFETY: native verification and restore have validated this archive's asset schema.
+        const manifest = JSON.parse(
+          await fs.readFile(
+            path.join(restored.targetPath, result.archiveRoot, "manifest.json"),
+            "utf8",
+          ),
+        ) as { assets: Array<{ kind: string; archivePath: string }> };
+        const asset = expectDefined(
+          manifest.assets.find((row) => row.kind === "state"),
+          "state asset",
+        );
+        const restoredState = path.join(restored.targetPath, asset.archivePath);
+        const restoredDatabase = new (requireNodeSqlite().DatabaseSync)(
+          path.join(restoredState, "state", "openclaw.sqlite"),
+          { readOnly: true },
+        );
+        try {
+          expect(restoredDatabase.prepare("PRAGMA user_version").get()).toEqual({
+            user_version: 17,
+          });
+        } finally {
+          restoredDatabase.close();
+        }
+        await expect(
+          fs.readlink(path.join(restoredState, "absolute-workspace-link")),
+        ).resolves.toBe(state.workspaceDir);
+        await expect(fs.readlink(linkPath)).resolves.toBe(state.workspaceDir);
+        expect(
+          createHash("sha256")
+            .update(await fs.readFile(databasePath))
+            .digest("hex"),
+        ).toBe(originalHash);
+        await expect(fs.readFile(state.statePath(rawPath))).resolves.toEqual(
+          Buffer.from(`${JSON.stringify(auditRecord("safe", "older-store"))}\n`),
+        );
+      } finally {
+        writer.mockRestore();
+        transaction.mockRestore();
+      }
+    });
+  });
   it.each(["lease-duration overrun", "concurrent audit migration"] as const)(
     "restores audit records exactly once after %s during the SQLite snapshot",
     async (scenario) => {

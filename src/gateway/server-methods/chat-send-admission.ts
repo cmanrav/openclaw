@@ -42,6 +42,7 @@ import {
   finishAbortedChatSend,
 } from "./chat-send-admission-cleanup.js";
 import { prepareChatSendAdmissionContext } from "./chat-send-admission-context.js";
+import { reserveChatSendAdmission } from "./chat-send-admission-reservation.js";
 import { prepareGoalChatSendRetry } from "./chat-send-goal-retry.js";
 import {
   resolveChatSendRequestConflict,
@@ -51,17 +52,14 @@ import {
 import type { ChatSendAdmissionParams } from "./chat-send-pre-admission.types.js";
 import {
   createPendingChatSendReservationAccess,
-  inspectGoalChatSendRetry,
   readChatSendDedupeResponse,
 } from "./chat-send-reservation.js";
 import { bindChatSendPreparedSession } from "./chat-send-session-binding.js";
 import { captureAdmittedChatSendSessionSettings } from "./chat-send-session-settings.js";
 import { withCurrentChatSendSession, prepareChatSendSessionEntry } from "./chat-send-session.js";
 import {
-  admitChatSendUploads,
   assertChatSendExclusiveAdmission,
   createChatSendWorkAdmission,
-  consumeChatSendAdmissionRetry,
   prepareChatSendAdmissionRetry,
   withCurrentChatSendRetry,
   releaseChatSendCallerAuthority,
@@ -109,27 +107,14 @@ export async function admitChatSend(params: ChatSendAdmissionParams) {
     : undefined;
   const pendingRetry = prepareChatSendAdmissionRetry(params);
   const preparedRetry = pendingRetry instanceof Promise ? await pendingRetry : pendingRetry;
-  const reserve = () => {
-    params.assertCurrent?.();
-    const goalRetry = inspectGoalChatSendRetry({ ...params, prepared: preparedGoalRetry });
-    if (goalRetry.kind !== "new") {
-      if (goalRetry.kind === "replay") {
-        respond(true, { ...goalRetry.receipt, replayed: true }, undefined, cachedMeta);
-      }
-      return undefined;
-    }
-    const retryComparison = consumeChatSendAdmissionRetry(params, preparedRetry);
-    if (retryComparison === false) {
-      return undefined;
-    }
-    const uploadAdmission = admitChatSendUploads({ params: p, client, context, respond });
-    if (!uploadAdmission.ok) {
-      return undefined;
-    }
-    params.assertCurrent?.();
-    pendingReservation.reserve();
-    return { retryComparison, uploadAdmission };
-  };
+  const reserve = () =>
+    reserveChatSendAdmission(
+      params,
+      preparedGoalRetry,
+      preparedRetry,
+      pendingReservation,
+      cachedMeta,
+    );
   const reserved = await consumeChatSendCurrent(params, reserve).catch((error: unknown) => {
     pendingReservation.clear();
     throw error;

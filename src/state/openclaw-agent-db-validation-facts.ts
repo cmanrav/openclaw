@@ -6,7 +6,10 @@ import {
   type SqliteDatabaseAdmissionKey,
 } from "../infra/sqlite-database-admission.js";
 import type { SqliteSchemaFacts } from "../infra/sqlite-schema-facts.js";
-import { readOpenClawAgentDatabaseIdentity } from "./openclaw-agent-db-identity.js";
+import {
+  findOpenClawAgentDatabaseIdentity,
+  readOpenClawAgentDatabaseIdentity,
+} from "./openclaw-agent-db-identity.js";
 
 export type OpenClawAgentDatabaseValidation = {
   agentId: string;
@@ -55,4 +58,16 @@ export function createOpenClawAgentDatabaseValidationReceipt(
   }
   Atomics.store(new Int32Array(validation.valid), 0, 1);
   return validation;
+}
+
+export function matchesOpenClawAgentDatabaseValidation(
+  database: { db: DatabaseSync; path: string; agentId: string },
+  validation: OpenClawAgentDatabaseValidation,
+): boolean {
+  return (
+    validation.agentId === database.agentId &&
+    validation.identity === findOpenClawAgentDatabaseIdentity(database)?.identity &&
+    validation.birthtime === findOpenClawAgentDatabaseIdentity(database)?.birthtime &&
+    Atomics.load(new Int32Array(validation.valid), 0) === 1
+  );
 }

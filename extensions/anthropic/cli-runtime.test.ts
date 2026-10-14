@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import { access, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { setTimeout as waitForProcessTick } from "node:timers/promises";
 import type {
   CliBackendExecuteContext,
   CliBackendLiveSessionCapability,
@@ -22,6 +21,7 @@ import {
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { buildAnthropicCliBackend } from "./cli-backend.js";
 import type { ClaudeCliSecretInput } from "./cli-process.js";
+import { waitForProcessExit } from "./cli-runtime.process-exit.test-support.js";
 import { CLAUDE_PROTOCOL_FIXTURE, resultDetail } from "./cli-runtime.test-support.js";
 import { executeClaudeCli } from "./cli.runtime.js";
 
@@ -149,31 +149,6 @@ async function fixtureReadyBeforeSettlement(
     }
   });
   await withinTest(Promise.race([receipts.waitFor(readyPath, "ready"), settled]), signal);
-}
-
-// Native transport joins its root and signal dispatch, not foreign descendant extinction.
-async function waitForProcessExit(pids: number[], signal: AbortSignal): Promise<void> {
-  try {
-    for (;;) {
-      if (
-        pids.every((pid) => {
-          try {
-            process.kill(pid, 0);
-            return false;
-          } catch {
-            return true;
-          }
-        })
-      ) {
-        return;
-      }
-      await waitForProcessTick(10, undefined, { signal });
-    }
-  } catch (cause) {
-    throw new Error(`Claude process tree ${pids.join(", ")} did not exit before the test aborted`, {
-      cause,
-    });
-  }
 }
 
 describe("Claude native stdio boundary", () => {

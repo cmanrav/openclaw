@@ -130,23 +130,7 @@ type CodexAppServerBindingMutation =
 
 export type CodexSessionGenerationRetirementResult = "applied" | "absent" | "conflict";
 
-/** Attempt cleanup may only clear the physical owner captured before its awaited work. */
-export async function clearCodexBindingForClient(
-  store: CodexAppServerBindingStore,
-  identity: CodexAppServerBindingIdentity,
-  thread: Pick<CodexAppServerThreadBinding, "threadId" | "clientId">,
-  authority: CodexBindingAuthority,
-): Promise<boolean> {
-  if (!thread.clientId) {
-    return false;
-  }
-  return await store.mutate(
-    identity,
-    { kind: "clear", threadId: thread.threadId, clientId: thread.clientId },
-    authority.assertCurrent,
-    authority,
-  );
-}
+export { clearCodexBindingForClient } from "./session-binding-cleanup.js";
 
 export type CodexBindingStateStore = Omit<
   NativeSessionBindingStateStoreV2<StoredCodexAppServerBinding>,

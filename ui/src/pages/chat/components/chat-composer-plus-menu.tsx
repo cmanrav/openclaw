@@ -26,7 +26,7 @@ import "../../../components/tooltip.ts";
 import "../../../components/web-awesome.ts";
 import type { ChatAttachmentControlsProps } from "./chat-attachment-controls.types.ts";
 import { handleChatAttachmentMenuSelection } from "./chat-attachment-inputs.ts";
-import { useSingleAttachmentPicker } from "./chat-attachment-picker-policy.ts";
+import { renderAttachmentOptions } from "./chat-composer-attachment-options.tsx";
 import { solidTemplate } from "./chat-composer-controls.ts";
 import { LitContent } from "./chat-composer-interop.tsx";
 import {
@@ -109,29 +109,6 @@ export type ChatComposerCapabilityMenuProps = {
 
 type ChatComposerPlusMenuContentProps = ChatComposerPlusMenuProps &
   ChatComposerCapabilityMenuProps & { showCapabilities: boolean };
-
-// The trigger and item hosts stay direct children of Web Awesome's slot owner.
-function renderAttachmentOptions() {
-  const entries = useSingleAttachmentPicker()
-    ? [{ value: "file", icon: icons.paperclip, label: t("chat.composer.attach") }]
-    : [
-        { value: "camera", icon: icons.camera, label: t("chat.composer.takePhoto") },
-        { value: "photo", icon: icons.image, label: t("chat.composer.attachPhoto") },
-        { value: "file", icon: icons.paperclip, label: t("chat.composer.attachFileOption") },
-      ];
-  return (
-    <For keyed={(item) => item} each={entries}>
-      {(entry) => (
-        <wa-dropdown-item class="agent-chat__attach-menu-option" value={entry().value}>
-          <span slot="icon" aria-hidden="true">
-            <LitContent value={entry().icon} />
-          </span>
-          <span>{entry().label}</span>
-        </wa-dropdown-item>
-      )}
-    </For>
-  );
-}
 
 const internalLink = (href: string, label: string): JSX.Element => (
   <a

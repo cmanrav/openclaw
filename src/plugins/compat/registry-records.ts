@@ -19,6 +19,7 @@ import {
 } from "./plugin-sdk-subpath-records.js";
 import { PROGRESS_RECEIPT_HANDOFF_COMPAT_RECORD } from "./progress-receipt-handoff-record.js";
 import { RUNTIME_CONFIG_COMPAT_RECORD } from "./runtime-config-record.js";
+import { SESSION_HEADER_LINK_COMPAT_RECORD } from "./session-header-link-record.js";
 import { SESSION_PERSISTENCE_COMPAT_RECORDS } from "./session-persistence-records.js";
 import { SESSION_TRANSCRIPT_VIEW_COMPAT_RECORD } from "./session-transcript-view-record.js";
 import { SKILL_COMMAND_DISCOVERY_COMPAT_RECORD } from "./skill-command-discovery-record.js";
@@ -62,23 +63,7 @@ export const PLUGIN_COMPAT_RECORDS = [
   RUNTIME_CONFIG_COMPAT_RECORD,
   ASSISTANT_TEXT_PHASE_TERMINAL_HINT_COMPAT_RECORD,
   SESSION_TRANSCRIPT_VIEW_COMPAT_RECORD,
-  {
-    code: "plugin-sdk-session-header-link",
-    status: "deprecated",
-    owner: "sdk",
-    introduced: "2026-10-01",
-    deprecated: "2026-10-12",
-    warningStarts: "2026-10-12",
-    removeAfter: "2027-01-12",
-    replacement:
-      "Register a plugin-owned `session-header` accessory that renders its own content; the host no longer supplies session conversation-link metadata",
-    docsPath: "/plugins/sdk-migration/compatibility-policy#session-header-link-helper",
-    surfaces: ["openclaw/plugin-sdk/control-ui.createSessionHeaderLink"],
-    diagnostics: ["TypeScript @deprecated annotation and shipped Plugin SDK surface check"],
-    tests: ["src/plugins/compat/registry.test.ts"],
-    releaseNote:
-      "`createSessionHeaderLink` from 2026.10.1 remains importable but renders nothing, because session conversation links were retired.",
-  },
+  SESSION_HEADER_LINK_COMPAT_RECORD,
   {
     code: "gateway-placement-sync-results",
     status: "deprecated",

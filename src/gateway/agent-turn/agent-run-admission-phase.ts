@@ -44,13 +44,10 @@ import { resolveGatewayCronCreatorAuthorityAdmission } from "../server-methods/c
 import { assertParentSubagentResumeSuccessorCurrent } from "../session-subagent-resume.js";
 import { consumeSubagentCompletionToolHandoff } from "../subagent-completion-tool-handoff.js";
 import { formatForLog } from "../ws-log.js";
-import {
-  isPreRegistrationAbortedAgentDedupeEntryForSession,
-  readGatewayDedupeEntry,
-  setGatewayDedupeEntries,
-} from "./agent-dedupe.js";
+import { setGatewayDedupeEntries } from "./agent-dedupe.js";
 import { canPrepareAgentSessionWorktree } from "./agent-handler-helpers.js";
 import { resolveAgentRunAdmissionModel } from "./agent-run-admission-model.js";
+import { rejectUnavailableAgentRunDispatch } from "./agent-run-admission-rejection.js";
 import {
   createAgentRunAdmissionRevalidator,
   releaseFailedAgentRunAdmission,
@@ -88,40 +85,7 @@ export async function prepareAgentRunDispatch(
   const coordination = isSubagentCoordinationInputProvenance(params.inputProvenance);
   const controlUiVisible = !params.suppressVisibleSessionEffects && !coordination;
   const parentResume = readInProcessSubagentResume(params.client?.internal);
-  const preRegistrationAbort = readGatewayDedupeEntry({
-    dedupe: params.context.dedupe,
-    keys: params.agentDedupeKeys,
-  });
-  if (
-    isPreRegistrationAbortedAgentDedupeEntryForSession({
-      entry: preRegistrationAbort,
-      runId: params.runId,
-      sessionKey: params.resolvedSessionKey,
-      alternateSessionKeys: [params.preAcceptedReservedSessionKey, params.requestedSessionKey],
-      agentId: params.activeSessionAgentId,
-    })
-  ) {
-    params.markAgentRunAccepted(true);
-    params.io.emitAcceptance([true, preRegistrationAbort?.payload, undefined], {
-      cached: true,
-      runId: params.runId,
-    });
-    return undefined;
-  }
-  if (
-    params.abortForLifecycleRotation({
-      sessionKey: params.resolvedSessionKey,
-      agentId: params.activeSessionAgentId,
-    })
-  ) {
-    return undefined;
-  }
-  if (params.restoredCronContinuationIdentity && !params.restoredCronContinuation) {
-    params.io.emitAcceptance([
-      false,
-      undefined,
-      errorShape(ErrorCodes.UNAVAILABLE, "cron run continuation could not be restored"),
-    ]);
+  if (rejectUnavailableAgentRunDispatch(params)) {
     return undefined;
   }
 

@@ -666,6 +666,10 @@ importers:
       '@openclaw/plugin-sdk':
         specifier: workspace:*
         version: link:../../packages/plugin-sdk
+    optionalDependencies:
+      fsevents:
+        specifier: 2.3.3
+        version: 2.3.3
 
   extensions/admin-http-rpc:
     devDependencies:

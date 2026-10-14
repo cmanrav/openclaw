@@ -12,6 +12,12 @@ openclaw plugins install @openclaw/acpx
 
 Restart the Gateway after installing or updating the plugin.
 
+The plugin explicitly declares the ACP runtime's transitive `fsevents` watcher as
+optional. npm global installs of distributions with bundled dependencies can
+otherwise promote it to a required dependency while loading the bundled tree.
+Keeping it optional lets installation proceed with the portable watcher fallback
+when the macOS native watcher is unavailable; install scripts remain enabled.
+
 The generated Codex and Claude ACP wrappers prefer the installed adapter while its
 entry file exists. If plugin capture cleanup removes that file, the next launch
 uses the existing pinned `npm exec` / `npx` fallback. This may require registry

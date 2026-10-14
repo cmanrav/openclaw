@@ -45,6 +45,7 @@ export const uiIsolatedTestFiles = [
   "ui/src/pages/chat/chat-pane.session-discussion.test.ts",
   "ui/src/pages/chat/chat-pane.test.ts",
   "ui/src/pages/chat/components/chat-transcript-controller.test.ts",
+  "ui/src/pages/chat/components/chat-transcript-controller.scroll-restoration.test.ts",
   "ui/src/pages/chat/components/chat-transcript-geometry.test.ts",
   "ui/src/pages/chat/components/chat-transcript-invalidation.test.ts",
   "ui/src/pages/chat/components/chat-transcript-message-controls.test.ts",

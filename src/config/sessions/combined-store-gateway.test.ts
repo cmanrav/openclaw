@@ -7,10 +7,6 @@ import {
   clearStoredSessionRowTranscriptForTest,
   observeSessionRowBackfill,
 } from "../../gateway/session-row-backfill.test-support.js";
-import {
-  createSessionRowProjection,
-  type SessionRowProjection,
-} from "../../gateway/session-row-projection.js";
 import { resolveSessionStoreKey } from "../../gateway/session-store-key.js";
 import { listProjectedSessions } from "../../gateway/session-utils-list.js";
 import { clearAgentRunContext, registerAgentRunContext } from "../../infra/agent-run-registry.js";
@@ -39,6 +35,7 @@ import {
   loadCombinedSessionStoreForGatewayCore,
   type ResolvedGatewaySessionStoreTargets,
 } from "./combined-store-gateway.js";
+import { withResidentRows } from "./combined-store-gateway.test-support.js";
 import { storeTargetKey } from "./combined-store-paths.js";
 import * as sessionAccessor from "./session-accessor.js";
 import {
@@ -48,18 +45,6 @@ import {
   replaceSessionEntrySync,
 } from "./session-accessor.js";
 import { setCanonicalSqliteSessionMainKey } from "./session-canonical-key.js";
-
-async function withResidentRows(
-  cfg: OpenClawConfig,
-  run: (projection: SessionRowProjection) => Promise<void>,
-) {
-  const projection = await createSessionRowProjection({ cfg });
-  try {
-    await run(projection);
-  } finally {
-    projection.dispose();
-  }
-}
 
 function admissionTargets(
   durableTargets: ResolvedGatewaySessionStoreTargets["durableTargets"],

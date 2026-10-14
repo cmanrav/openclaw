@@ -1,6 +1,5 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type {
-  SessionsFilesRevealResult,
   WorktreesBranchesResult,
   WorktreesListResult,
 } from "../../../../packages/gateway-protocol/src/index.js";
@@ -48,6 +47,7 @@ import { resolveChatAgentId, selectedChatSessionRow } from "./chat-state-route.t
 import type { HeaderMenuAction } from "./components/chat-header-session-menu.ts";
 import type { ChatPaneHeaderAction } from "./components/chat-pane-header.ts";
 import { buildContinueInTerminalCommand } from "./continue-in-terminal-command.ts";
+import { revealSessionWorkspace } from "./session-workspace-reveal.ts";
 
 export abstract class ChatPaneSessionMenu extends ChatPaneContext {
   private readonly headerSessionDataMemo = new ChatPaneHeaderMemo<SessionMenuData>();
@@ -716,18 +716,6 @@ export abstract class ChatPaneSessionMenu extends ChatPaneContext {
       return;
     }
     const owner = this.headerOutcomeOwner;
-    const agentId = parseAgentSessionKey(row.key)?.agentId;
-    try {
-      const result = await client.request<SessionsFilesRevealResult>("sessions.files.reveal", {
-        key: row.key,
-        ...(agentId ? { agentId } : {}),
-      });
-      if (!result.ok) {
-        const error = result.error ?? "Failed to reveal session workspace.";
-        this.publishHeaderError(error, owner);
-      }
-    } catch (error) {
-      this.publishHeaderError(error, owner);
-    }
+    await revealSessionWorkspace(client, row, (error) => this.publishHeaderError(error, owner));
   }
 }

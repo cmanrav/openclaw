@@ -5,7 +5,6 @@ import { getRuntimeConfig } from "../config/config.js";
 import { registerSessionMaintenancePreserveKeysProvider } from "../config/sessions/store-maintenance-preserve.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { formatErrorMessage } from "../infra/errors.js";
-import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { getGatewayRestartDrainSignal } from "../process/gateway-work-admission.js";
 import { onSessionIdentityMutation } from "../sessions/session-lifecycle-events.js";
 import {
@@ -18,7 +17,6 @@ import { createGitHubPublicationRuntime } from "./github-publication-runtime.js"
 import type { NodeWorkerSupervisorTransport } from "./node-registry-private.js";
 import { measureGatewayCloseStep } from "./restart-trace.js";
 import { emitSessionsChanged } from "./server-methods/session-change-event.js";
-import type { WorkerPlacementSessionWorkCancellation } from "./server-worker-placement-cancel.js";
 import {
   createGatewayWorkerPlacementChangePublisher,
   subscribeGatewayWorkerPlacementMetadataChanges,
@@ -43,13 +41,11 @@ import {
   runWorkerPlacementSessionBarrier,
   WorkerDispatchTargetChangedError,
 } from "./server-worker-placement-session-target.js";
+import type { GatewayWorkerPlacementRuntimeParams } from "./server-worker-placement-startup.types.js";
 import { recoverGatewayWorkerPlacementWorkspaces } from "./server-worker-placement-workspace-recovery.js";
 import { materializeSessionRepositoryWorkspaceOnGateway } from "./session-repository-materialization.js";
 import { createDevicePlacementAuthority } from "./worker-environments/device-placement-eligibility.js";
-import {
-  createNodeWorkspaceRetainCoordinator,
-  type NodeWorkerBundleRetention,
-} from "./worker-environments/node-workspace-retain-coordinator.js";
+import { createNodeWorkspaceRetainCoordinator } from "./worker-environments/node-workspace-retain-coordinator.js";
 import { createWorkerPlacementDiskSpaceMonitor } from "./worker-environments/placement-disk-space.js";
 import { coordinateWorkerPlacementDispatch } from "./worker-environments/placement-dispatch-coordinator.js";
 import type { WorkerDevicePlacementRequirementResolver } from "./worker-environments/placement-dispatch-startup.js";
@@ -61,7 +57,6 @@ import { createPlacementSessionRetirement } from "./worker-environments/placemen
 import type { WorkerSessionPlacementStore } from "./worker-environments/placement-store.js";
 import { isFailedWorkerPlacementEnvironmentGone } from "./worker-environments/placement-target.js";
 import { createRepositoryWorkspaceMutationService } from "./worker-environments/repository-workspace-mutation.js";
-import type { WorkerEnvironmentService } from "./worker-environments/service.js";
 import type { WorkerSessionWorkspace } from "./worker-environments/session-workspace.js";
 import { createWorkerPlacementRedispatch } from "./worker-environments/worker-placement-redispatch.js";
 import { createWorkerSessionTurnPlacementProvider } from "./worker-environments/worker-turn-launcher.js";
@@ -75,26 +70,7 @@ const WORKER_PLACEMENT_RECONCILE_INTERVAL_MS = 60_000;
 
 type WorkerPlacementSidecar = { stop: () => Promise<void> };
 
-export type GatewayWorkerPlacementRuntimeParams = {
-  scheduler: GatewayScheduler;
-  placements: WorkerSessionPlacementStore;
-  initialPlacements: readonly WorkerSessionPlacementRecord[];
-  getCommittedRuntimeConfig: () => OpenClawConfig;
-  environments: WorkerEnvironmentService;
-  gatewayNamespace: string;
-  nodeWorkerBundleRetention?: NodeWorkerBundleRetention;
-  persistAbandonedPartial?: (request: {
-    sessionId: string;
-    sessionKey: string;
-    agentId: string;
-    runId: string;
-  }) => Promise<void>;
-  getSessionChangeContext?: () => Parameters<typeof emitSessionsChanged>[0] | undefined;
-  cancelSessionWork: WorkerPlacementSessionWorkCancellation;
-  revokeSessionAuthority: (request: { sessionId: string; sessionKeys: readonly string[] }) => void;
-  info?: (message: string) => void;
-  warn: (message: string) => void;
-};
+export type { GatewayWorkerPlacementRuntimeParams } from "./server-worker-placement-startup.types.js";
 
 export function createGatewayGitHubPublicationRuntime(params: {
   placements: WorkerSessionPlacementStore;

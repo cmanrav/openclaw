@@ -5,7 +5,6 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { readAcpSessionMetaForEntryAsync } from "../../acp/runtime/session-meta-readonly.js";
 import { resolveSessionThreadInfo } from "../../channels/plugins/session-conversation.js";
-import { getRuntimeConfig } from "../../config/config.js";
 import { tryResolveLegacyCompatibilityAgentId } from "../../config/legacy.default-agent-owner.js";
 import { createRuntimeConfigReader } from "../../config/runtime-snapshot.js";
 import { resolvePersistedSessionStoreOwnerForKey } from "../../config/sessions/session-store-owner.js";
@@ -33,10 +32,6 @@ import { bindRequesterYieldCronAuthority } from "../cron-creator-authority-conte
 import { resolveNestedAgentLaneForSession } from "../lanes.js";
 import { RESTART_RECOVERY_INTERRUPTION_NOTE } from "../restart-recovery-prompt.js";
 import { isSubagentSessionFromEntry } from "../subagents/spawn/subagent-depth-policy.js";
-import {
-  describeSessionsSendTool,
-  SESSIONS_SEND_TOOL_DISPLAY_SUMMARY,
-} from "../tool-description-presets.js";
 import { ToolInputError } from "../tool-input-error.js";
 import type { AnyAgentTool } from "./common.js";
 import { readToolStringParam } from "./common.js";
@@ -56,10 +51,6 @@ import {
   resolveSessionToolContext,
   resolveVisibleSessionReference,
 } from "./sessions-helpers.js";
-import {
-  PlacedSessionsSendSchema,
-  PLACED_SESSIONS_SEND_DESCRIPTION,
-} from "./sessions-placement-tool-contract.js";
 import { prepareSessionsSendCommunication } from "./sessions-send-communication.js";
 import { dispatchSessionsSendFollowup } from "./sessions-send-followup.js";
 import { sendFailure } from "./sessions-send-helpers.js";
@@ -72,6 +63,7 @@ import {
   createSessionsSendSessionReaders,
   withSessionsSendRequesterSource,
 } from "./sessions-send-session-source.js";
+import { createSessionsSendToolDefinition } from "./sessions-send-tool.definition.js";
 import {
   callSessionsSendGateway,
   createConfiguredAgentMainSession,
@@ -84,24 +76,13 @@ import {
   readSessionsSendMode,
   readSessionsSendTimeout,
 } from "./sessions-send-tool.input.js";
-import { SessionsSendToolSchema, SessionsSendOutputSchema } from "./sessions-send-tool.schema.js";
 import type { SessionsSendToolOptions } from "./sessions-send-tool.types.js";
 
 export function createSessionsSendTool(opts?: SessionsSendToolOptions): AnyAgentTool {
   const requesterOrigin = normalizeDeliveryContext(opts?.requesterOrigin);
   const withRequesterAuthority = bindRequesterYieldCronAuthority(opts?.requesterTurnRunId);
   const tool: AnyAgentTool = {
-    label: "Session Send",
-    name: "sessions_send",
-    displaySummary: SESSIONS_SEND_TOOL_DISPLAY_SUMMARY,
-    description: opts?.workerPlacement
-      ? PLACED_SESSIONS_SEND_DESCRIPTION
-      : describeSessionsSendTool({
-          allowThreadTargets:
-            (opts?.config ?? getRuntimeConfig()).tools?.sessions?.allowThreadTargets === true,
-        }),
-    parameters: opts?.workerPlacement ? PlacedSessionsSendSchema : SessionsSendToolSchema,
-    outputSchema: SessionsSendOutputSchema,
+    ...createSessionsSendToolDefinition(opts),
     execute: wrapGatewayPersonalToolExecution(async (_toolCallId, args) => {
       const params = isRecord(args) ? args : {};
       const promptedAt = Date.now();

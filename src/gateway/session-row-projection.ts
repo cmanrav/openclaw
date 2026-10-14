@@ -1,10 +1,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { listAgentIds } from "../agents/agent-scope-config.js";
 import { createSubagentSessionListReadView } from "../agents/subagents/registry/subagent-registry-state.js";
 import { cloneEnvWithPlatformSemantics } from "../config/config-env-vars.js";
 import type { readPreparedSessionEntryChange } from "../config/sessions/session-accessor.sqlite-entry-cache-publication.js";
 import { resolveStateDir } from "../config/state-dir.js";
-import { isIncognitoSessionKey } from "../routing/session-key.js";
 import {
   isSessionStoreTopologyChange,
   type SessionRowChange,
@@ -32,6 +30,7 @@ import { createSessionRowProjectionContext } from "./session-row-projection-cont
 import { createSessionRowGenerationObservations } from "./session-row-projection-generation.js";
 import { createSessionRowCreatorIndex } from "./session-row-projection-identities.js";
 import * as rowReads from "./session-row-projection-materialize.js";
+import { createSessionRowMaterializer } from "./session-row-projection-materializer.js";
 import {
   createSessionRowPublication,
   subscribeSessionRowPublications,
@@ -413,52 +412,19 @@ export async function createSessionRowProjection(params: records.ProjectionOptio
       readEntry: readSessionRowEntry,
       acquireEntry,
     });
-  function materialize(
-    row: records.Row,
-    configuredAgentIds = new Set(listAgentIds(cfg)),
-    readRow = rowReads.readResidentSessionRow,
-    preparedDatabaseFacts?: records.PreparedSessionRowDatabaseFacts,
-    repositoryWorkspace?: records.Inputs["preparedRepositoryWorkspace"],
-  ) {
-    const retained = row.retainedDatabaseFacts;
-    const databaseFacts =
-      preparedDatabaseFacts ??
-      (records.isPreparedSessionRowDatabaseFacts(retained) ? retained : undefined);
-    if (!row.entry || (!databaseFacts && !isIncognitoSessionKey(row.key))) {
-      return false;
-    }
-    const links = readChildLinks(row, databaseFacts !== undefined);
-    if (!isIncognitoSessionKey(row.key)) {
-      row.membership = new Set(membership.membership(row.storeTarget.storePath, row.key) ?? []);
-    }
-    const prepared = readRow({
-      row: { ...row, entry: row.entry },
-      cfg,
-      modelCatalog: catalog.current,
-      configuredAgentIds,
-      context: metadata.current,
-      subagentInputs: metadata.subagentInputs,
-      gatewayContext: params.context,
-      placementFactsReader: placementFacts,
-      links,
-      readSourceEntry: (key) => readSourceEntry(row, key, databaseFacts !== undefined),
-      databaseFacts,
-      repositoryWorkspace,
-    });
-    if (!isIncognitoSessionKey(row.key)) {
-      placementFacts.register(row.entry.sessionId);
-    }
-    const previousBoard = row.hasBoard;
-    Object.assign(row, prepared, {
-      materializedSequence: ++materializedCount,
-      ...metadata.materializedRevisions,
-    });
-    if (!isIncognitoSessionKey(row.key) && records.ready(row)) {
-      backfill.prepare(row, databaseFacts);
-    }
-    revisions.materialized(row, previousBoard);
-    return true;
-  }
+  const materialize = createSessionRowMaterializer({
+    config: () => cfg,
+    catalog,
+    metadata,
+    membership,
+    placementFacts,
+    backfill,
+    revisions,
+    readChildLinks,
+    readSourceEntry,
+    gatewayContext: params.context,
+    nextSequence: () => ++materializedCount,
+  });
   const {
     refresh,
     refreshBatch,

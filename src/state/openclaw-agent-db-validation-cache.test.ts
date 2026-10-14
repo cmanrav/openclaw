@@ -12,7 +12,6 @@ import {
   runSqliteReadOperationSync,
 } from "../infra/sqlite-schema-facts.js";
 import { runSqliteImmediateTransactionSync } from "../infra/sqlite-transaction.js";
-import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import {
   AgentDatabaseSchemaAdmissionChangedError,
   AgentDatabaseSchemaAdmissionInvalidError,
@@ -24,7 +23,6 @@ import {
 import {
   OPENCLAW_AGENT_SCHEMA_VERSION,
   type OpenClawAgentDatabase,
-  type OpenClawAgentDatabaseOptions,
 } from "./openclaw-agent-db-contract.js";
 import {
   openOpenClawAgentDatabaseReadOnly,
@@ -53,6 +51,7 @@ import {
   releaseOpenClawAgentDatabaseReadValidation,
   setOpenClawAgentDatabaseValidation,
 } from "./openclaw-agent-db-validation-cache.js";
+import { withReceiptFixture } from "./openclaw-agent-db-validation-cache.test-support.js";
 import {
   closeOpenClawAgentDatabaseByPath,
   openOpenClawAgentDatabase,
@@ -75,30 +74,6 @@ vi.mock("../infra/owned-directory-observation.js", () => ({
     };
   },
 }));
-
-async function withReceiptFixture(
-  populated: boolean,
-  run: (
-    database: OpenClawAgentDatabase,
-    options: OpenClawAgentDatabaseOptions,
-  ) => void | Promise<void>,
-) {
-  await withOpenClawTestState({ scenario: "minimal" }, async ({ env }) => {
-    const options = { agentId: "main", env };
-    let database = openOpenClawAgentDatabase(options);
-    if (populated) {
-      database.db.exec(`INSERT INTO session_nodes
-        (session_key, current_session_id, entry_json, updated_at)
-        VALUES ('agent:main:existing', 'existing', '{"sessionId":"existing","updatedAt":1}', 1);
-        UPDATE session_nodes SET entry_valid = 1;
-        DELETE FROM session_canonical_validation_pending;`);
-      invalidateOpenClawAgentDatabaseValidation(database.path);
-      closeOpenClawAgentDatabaseByPath(database.path);
-      database = openOpenClawAgentDatabase(options);
-    }
-    await run(database, options);
-  });
-}
 
 describe("canonical proof on physical database validation", () => {
   it.each(["observation", "reader admission"] as const)(

@@ -6,6 +6,7 @@ import { runEmbeddedAgentEntry } from "../../agents/embedded-agent-runner/run-en
 import type { FastModeAutoProgressState } from "../../agents/fast-mode.js";
 import { resolveSessionRuntimeOverrideForProvider } from "../../agents/session-runtime-compat.js";
 import { resolveCandidateAgentRuntime } from "../../agents/thinking-runtime.js";
+import { isRuntimeToolAllowed } from "../../agents/tool-policy-match.js";
 import { buildGenericCliContextEngineHostSupport } from "../../context-engine/host-compat.js";
 import { revokeMessageActionTurnCapability } from "../../gateway/message-action-turn-capability.js";
 import { emitAgentEvent } from "../../infra/agent-events.js";
@@ -47,6 +48,7 @@ import {
   readSourceReplyDeliveryRuntime,
   type SourceReplyDeliveryRuntimeOptions,
 } from "./source-reply-delivery-runtime.js";
+import { recoverStrandedReplyBeforeCompletion } from "./stranded-reply-inline-recovery.js";
 
 /** Runs the provider/model fallback candidates while preserving cross-candidate delivery state. */
 export async function runAgentFallbackCandidates(params: AgentFallbackCycleParams) {
@@ -327,19 +329,21 @@ export async function runAgentFallbackCandidates(params: AgentFallbackCycleParam
             },
             deferredLifecycle: params.state.deferredLifecycle,
           } satisfies AgentFallbackCandidateCommonParams;
-          let result: EmbeddedAgentRunResult;
-          if (runtime.useCliExecution) {
-            result = await runCliFallbackCandidate({
-              ...common,
-              cliExecutionProvider: runtime.cliExecutionProvider,
-              lifecycleGeneration: params.state.lifecycleGeneration,
-              onSessionWriter: (writer) => {
-                params.state.sessionWriter = writer;
-              },
-            });
-          } else {
+          const invokeCandidate = async (
+            candidateCommon: typeof common,
+          ): Promise<EmbeddedAgentRunResult> => {
+            if (runtime.useCliExecution) {
+              return await runCliFallbackCandidate({
+                ...candidateCommon,
+                cliExecutionProvider: runtime.cliExecutionProvider,
+                lifecycleGeneration: params.state.lifecycleGeneration,
+                onSessionWriter: (writer) => {
+                  params.state.sessionWriter = writer;
+                },
+              });
+            }
             const candidate = await runEmbeddedFallbackCandidate({
-              ...common,
+              ...candidateCommon,
               candidateAgentRuntime,
               getLifecycleGeneration: () => params.state.lifecycleGeneration,
               onLifecycleGeneration: (generation) => {
@@ -358,8 +362,48 @@ export async function runAgentFallbackCandidates(params: AgentFallbackCycleParam
             });
             params.state.maintenanceAuthProfile = candidate.maintenanceAuthProfile;
             params.state.compactionRequestBudget = candidate.compactionRequestBudget;
-            result = candidate.result;
-          }
+            return candidate.result;
+          };
+          let result = await invokeCandidate(common);
+          const entry = turn.getActiveSessionEntry();
+          result = await recoverStrandedReplyBeforeCompletion({
+            result,
+            followupRun: turn.followupRun,
+            sourceReplyDeliveryMode: sourceReplyDeliveryRuntime.currentMode,
+            sendPolicyDenied: entry?.sendPolicy === "deny",
+            isHeartbeat: turn.isHeartbeat,
+            isRoomEvent: turn.followupRun.currentInboundEventKind === "room_event",
+            messageToolAllowed:
+              !turn.opts?.disableTools && isRuntimeToolAllowed("message", turn.opts?.toolsAllow),
+            hasDeliveryClaim: Boolean(
+              entry?.restartRecoveryDeliveryRunId && entry.restartRecoveryDeliverySourceRunId,
+            ),
+            hasPendingDelivery: Boolean(
+              entry?.restartRecoveryDeliveryReceiptState ||
+              entry?.pendingFinalDelivery ||
+              turn.blockReplyPipeline?.hasBuffered() ||
+              turn.blockReplyPipeline?.didStream(),
+            ),
+            abortSignal: params.runAbortSignal,
+            recover: (retry) =>
+              invokeCandidate({
+                ...common,
+                turn: {
+                  ...turn,
+                  commandBody: retry.prompt,
+                  transcriptCommandBody: undefined,
+                  followupRun: {
+                    ...retry,
+                    currentInboundContext: turn.followupRun.currentInboundContext,
+                  },
+                  opts: { ...turn.opts, toolsAllow: retry.toolsAllow },
+                },
+                candidateRun: { ...common.candidateRun, suppressNextUserMessagePersistence: true },
+                userTurnTranscriptRecorder: undefined,
+                suppressQueuedUserPersistenceForCandidate: true,
+                currentTurnImages: {},
+              }),
+          });
           const thinking = result.meta.requestShaping?.thinking ?? candidateThinkLevel;
           const thinkingClamp = formatThinkingLevelClampNotice({
             requested: turn.followupRun.run.thinkLevel,

@@ -416,6 +416,16 @@ test("registered hook and tool wiring uses host scheduler and one bounded revisi
     },
   });
   assert.ok(engine);
+  const promptContribution = await hooks.get("before_prompt_build")(
+    {
+      currentUserMessage: "Retain the original qualification goal",
+      currentUserMessageId: "hook-contract-check",
+    },
+    { ...fixtureState.context, toolAuthority: { allows: () => true } },
+  );
+  // Authorized prompt hooks project appendContext, not arbitrary result properties.
+  assert.match(promptContribution.appendContext, /Business task ownership:/);
+  assert.equal(promptContribution.appendSystemContext, undefined);
   assert.equal(toolFactory.create({ sessionKey: "agent:jcr:main" }), null);
   const revision = await hooks.get("before_agent_finalize")({}, fixtureState.context);
   assert.equal(revision.retry.maxAttempts, 1);

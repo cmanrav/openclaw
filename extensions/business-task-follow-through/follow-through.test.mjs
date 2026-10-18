@@ -624,3 +624,18 @@ test("native untyped assignment enrolls only with matching current business spaw
   state.nativeEntry.abortedLastRun = false;
   assert.equal((await state.engine.prepare(event, context)).status, "running");
 });
+
+test("native observation failure alerts once and keeps the command recoverable", async () => {
+  const state = await fixture();
+  state.gateway.readSessionFacts = async () => {
+    throw new Error("Native facts unavailable");
+  };
+  await state.engine.sweep();
+  assert.equal((await state.store.lookup(state.task.id)).status, "stalled");
+  assert.equal(state.calls.length, 1);
+  state.restart();
+  await state.engine.sweep();
+  assert.equal(state.calls.length, 1);
+  await state.checkpoint("progress");
+  assert.equal((await state.store.lookup(state.task.id)).status, "running");
+});

@@ -606,6 +606,20 @@ export class FollowThrough {
         await this.inspect(task);
       } catch (error) {
         this.reportFailure(error);
+        // Observation failures must not leave an owned command silently waiting.
+        // Keep approval/review gates and terminal outcomes intact. If storage or
+        // cancellation reads also fail, service health remains the honest fallback.
+        if (["running", "waiting_dependency"].includes(task.status)) {
+          try {
+            await this.stall(
+              task,
+              "Native task observation failed. The original owner is retained; the operator must inspect before continuation. No business write was replayed.",
+            );
+            await this.notify(task);
+          } catch (notificationError) {
+            this.reportFailure(notificationError);
+          }
+        }
       }
     }
   }

@@ -43,7 +43,7 @@ export function registerFollowThrough(api) {
           return;
         }
         return {
-          appendContext: `Business task ownership: ${task.id}, state ${task.status}. Keep this command owned until verified completion or an explicit blocked/failed/canceled outcome. Use business_task_checkpoint before finalizing: progress while working; wait_dependency with exact native run IDs before yielding; wait_approval only for a real human gate. Mark conversation only if this request contains no work. Submit done only with a canonical completion receipt; this records review_pending, not success. A separate live session must use business_task_review after independently checking canonical landing, counts, and the actual outcome. The service owns the one terminal notification. Original goal: ${task.goal}. Current checkpoint: ${task.summary}. A status question is steering, not cancellation. A new explicit approval may resolve only its exact waiting_approval gate; record progress after evaluating that current instruction, without dropping the original goal. Preserve earlier work and all action gates.`,
+          appendContext: `Business task ownership: ${task.id}, state ${task.status}. Keep this command owned until verified completion or an explicit blocked/failed/canceled outcome. Use business_task_checkpoint before finalizing: progress while working; wait_dependency with exact OpenClaw sessions_spawn run IDs, or wait_native_result with exact native spawn_agent child labels before yielding; wait_approval only for a real human gate. Mark conversation only if this request contains no work. Submit done only with a canonical completion receipt; this records review_pending, not success. A separate live session must use business_task_review after independently checking canonical landing, counts, and the actual outcome. The service owns the one terminal notification. Original goal: ${task.goal}. Current checkpoint: ${task.summary}. For sustained work use the existing native off-chat worker/announcement path when authorized; register the correct native-result or run-ID wait before yielding and let its native result resume this owner. Do not end after a promise or require the requester to ask again. Record concise meaningful milestones; the service reports changed progress at a bounded cadence. A status question is steering, not cancellation. A new explicit approval may resolve only its exact waiting_approval gate; record progress after evaluating that current instruction, without dropping the original goal. Preserve earlier work and all action gates.`,
         };
       }),
     { requiresToolAuthority: true },
@@ -92,6 +92,7 @@ export function registerFollowThrough(api) {
                 enum: [
                   "progress",
                   "wait_dependency",
+                  "wait_native_result",
                   "wait_approval",
                   "done",
                   "blocked",
@@ -102,6 +103,11 @@ export function registerFollowThrough(api) {
               },
               summary: { type: "string", maxLength: 600 },
               runIds: { type: "array", items: { type: "string" }, maxItems: 8 },
+              nativeChildren: {
+                type: "array",
+                items: { type: "string", maxLength: 200 },
+                maxItems: 8,
+              },
               evidencePath: { type: "string" },
               sha256: { type: "string" },
             },

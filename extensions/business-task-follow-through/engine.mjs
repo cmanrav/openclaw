@@ -51,10 +51,15 @@ const bounded = (text) => String(text ?? "").slice(0, 600);
 // Host-injected scaffolding (e.g. a helper's "[Subagent Context]" preamble) is wrapped in these
 // markers. It must never become a task's human-readable goal: on 2026-10-18 a helper alert
 // showed Chase the raw preamble instead of the task.
-const INTERNAL_CONTEXT = /<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>[\s\S]*?(?:<<<END_OPENCLAW_INTERNAL_CONTEXT>>>|$)/g;
+const INTERNAL_CONTEXT =
+  /<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>[\s\S]*?(?:<<<END_OPENCLAW_INTERNAL_CONTEXT>>>|$)/g;
 export const readableGoal = (text) =>
-  bounded(String(text ?? "").replace(INTERNAL_CONTEXT, " ").replace(/\s+/g, " ").trim()) ||
-  "(no description)";
+  bounded(
+    String(text ?? "")
+      .replace(INTERNAL_CONTEXT, " ")
+      .replace(/\s+/g, " ")
+      .trim(),
+  ) || "(no description)";
 // A helper works for another session, which receives its result through the native announce
 // chain. Its stalled/blocked/failed outcome is for that parent, not a person; only top-level
 // requests alert the requester. Records enrolled before `helper` existed are inferred from an
@@ -62,7 +67,9 @@ export const readableGoal = (text) =>
 export const isHelperTask = (task) =>
   task.helper ??
   Boolean(
-    resumableSession(task.sessionKey) && task.route?.sessionKey && task.route.sessionKey !== task.sessionKey,
+    resumableSession(task.sessionKey) &&
+    task.route?.sessionKey &&
+    task.route.sessionKey !== task.sessionKey,
   );
 
 // All mutations and side effects share one queue. The host joins service/tool work
@@ -77,6 +84,7 @@ export class FollowThrough {
     notificationTarget = "qualification-operator",
     readOwner = async () => ({}),
     idleMs = 900000,
+    progressMs = 300000,
   }) {
     Object.assign(this, {
       store,
@@ -87,6 +95,7 @@ export class FollowThrough {
       notificationTarget,
       readOwner,
       idleMs,
+      progressMs,
     });
     this.queue = Promise.resolve();
   }
@@ -163,7 +172,40 @@ export class FollowThrough {
         !entry.abortedLastRun,
       );
     }
-    if (provenance?.kind !== "external_user" && !delegatedTask && !nativeAssignment) {
+    // Ordinary Telegram dispatch intentionally leaves InputProvenance unset. Use only
+    // the host's user trigger, authenticated direct-channel identities, and current
+    // session delivery binding; never infer external input from prompt text.
+    let nativeExternal = false;
+    const directChat = /^agent:[^:]+:telegram:direct:(\d+)$/.exec(context.sessionKey ?? "")?.[1];
+    if (
+      !provenance &&
+      sessionAgentId(context.sessionKey) !== "jcr" &&
+      context.trigger === "user" &&
+      context.channel === "telegram" &&
+      typeof context.accountId === "string" &&
+      context.accountId.length > 0 &&
+      directChat &&
+      context.chatId === directChat &&
+      context.senderId === directChat
+    ) {
+      const entry = await this.readOwner({
+        agentId: context.agentId,
+        sessionKey: context.sessionKey,
+      });
+      const route = externalTelegramRoute(entry);
+      nativeExternal = Boolean(
+        entry?.sessionId === context.sessionId &&
+        route &&
+        route.to.replace(/^telegram:/, "") === directChat &&
+        route.accountId === context.accountId,
+      );
+    }
+    if (
+      provenance?.kind !== "external_user" &&
+      !delegatedTask &&
+      !nativeAssignment &&
+      !nativeExternal
+    ) {
       return existing;
     }
     const currentMessage = event.currentUserMessage;
@@ -408,12 +450,16 @@ export class FollowThrough {
       throw new Error("Terminal task cannot be resumed by a late result");
     }
     const action = parameters.action;
+    if (action === "wait_native_result" && sessionAgentId(context.sessionKey) === "jcr") {
+      throw new Error("Native child result tracking is outside this JCR-excluded repair");
+    }
     if (action === "conversation" && task.classified) {
       throw new Error("A conversational side question cannot dismiss an owned command");
     }
     const allowed = [
       "progress",
       "wait_dependency",
+      "wait_native_result",
       "wait_approval",
       "done",
       "blocked",
@@ -450,10 +496,31 @@ export class FollowThrough {
         ? "running"
         : action === "wait_approval"
           ? "waiting_approval"
-          : "waiting_dependency";
+          : action === "wait_native_result"
+            ? "waiting_native_result"
+            : "waiting_dependency";
     task.ownerRunId = context.runId ?? null;
     task.updatedAt = this.now();
     task.continuation = null;
+    if (action === "wait_native_result") {
+      if (
+        !Array.isArray(parameters.nativeChildren) ||
+        parameters.nativeChildren.length < 1 ||
+        parameters.nativeChildren.length > 8 ||
+        parameters.nativeChildren.some(
+          (child) => typeof child !== "string" || !child.trim() || child.length > 200,
+        )
+      ) {
+        throw new Error(
+          "Native result wait requires one to eight exact native child labels from spawn_agent",
+        );
+      }
+      // Labels are a retained owner checkpoint, not verified run identities or
+      // authority to resume anything. The Codex host owns delivery/custody.
+      task.nativeChildren = [...new Set(parameters.nativeChildren)];
+    } else {
+      task.nativeChildren = [];
+    }
     if (action === "wait_dependency") {
       if (
         !Array.isArray(parameters.runIds) ||
@@ -527,6 +594,7 @@ export class FollowThrough {
     const heading =
       {
         delivery_pending: "Done",
+        progress: "Progress",
         stalled: "Still open and needs attention",
         blocked: "Blocked",
         failed: "Failed",
@@ -535,18 +603,20 @@ export class FollowThrough {
     return [
       `${heading}: ${readableGoal(task.goal).slice(0, 180)}`,
       task.summary,
-      forOperator ? `Agent: ${task.agentId}. Task ${task.id.slice(0, 8)}` : `Task ${task.id.slice(0, 8)}`,
+      forOperator
+        ? `Agent: ${task.agentId}. Task ${task.id.slice(0, 8)}`
+        : `Task ${task.id.slice(0, 8)}`,
     ].join("\n");
   }
-  async notify(task) {
-    const notification = task.notification;
+  async notify(task, kind = "outcome") {
+    const notification = kind === "progress" ? task.progressNotification : task.notification;
     if (!notification || ["delivered", "reported", "suppressed"].includes(notification.state)) {
       return;
     }
     if (isHelperTask(task)) {
       notification.state = "suppressed";
       notification.reason = "Helper outcome belongs to the spawning session, not a person";
-      if (task.status === "delivery_pending") {
+      if (kind === "outcome" && task.status === "delivery_pending") {
         task.status = "done";
       }
       await this.save(task);
@@ -586,7 +656,11 @@ export class FollowThrough {
     try {
       const receipt = await this.gateway.request("send", {
         ...this.alertDestination(task),
-        message: this.alertText(task),
+        message: this.alertText(
+          kind === "progress"
+            ? { ...task, status: "progress", summary: notification.summary }
+            : task,
+        ),
         idempotencyKey: `business-follow-through:${notification.incident}`,
       });
       if (!receipt?.messageId && !receipt?.messageIds?.length) {
@@ -594,7 +668,11 @@ export class FollowThrough {
       }
       notification.state = "delivered";
       notification.receipt = receipt;
-      if (task.status === "delivery_pending") {
+      if (kind === "progress") {
+        task.lastProgressReportedAt = this.now();
+        task.lastProgressReportedSummary = notification.summary;
+      }
+      if (kind === "outcome" && task.status === "delivery_pending") {
         task.status = "done";
       }
       await this.save(task);
@@ -633,6 +711,28 @@ export class FollowThrough {
     if (task.status === "waiting_approval") {
       return;
     } // An approval wait is not a stalled worker.
+    // Report changed, classified progress at a bounded cadence, not a timer's
+    // invented "still working". Keep its outbox separate from terminal delivery.
+    if (
+      ["running", "waiting_dependency", "waiting_native_result"].includes(task.status) &&
+      task.classified &&
+      sessionAgentId(task.sessionKey) !== "jcr" &&
+      this.now() - task.updatedAt < this.idleMs &&
+      this.now() - (task.lastProgressReportedAt ?? task.createdAt) >= this.progressMs &&
+      task.summary !== task.lastProgressReportedSummary &&
+      !isHelperTask(task)
+    ) {
+      if (!task.progressNotification || task.progressNotification.state === "delivered") {
+        task.progressNotification = {
+          state: "pending",
+          incident: `${task.id}:progress:${digest(task.summary)}`,
+          summary: task.summary,
+          attempts: 0,
+        };
+        await this.save(task);
+      }
+      await this.notify(task, "progress");
+    }
     if (task.status === "waiting_dependency") {
       const dependencies = [];
       for (const runId of task.dependencies) {
@@ -659,15 +759,15 @@ export class FollowThrough {
         ({ result }) => result.status === "pending" && result.yielded !== true,
       );
       const ready = completed.length === dependencies.length || (completed.length > 0 && paused);
-      if (ready && owner.run !== "active" && !task.continuation) {
-        if (!resumableSession(task.sessionKey)) {
-          await this.finish(
-            task,
-            "blocked",
-            "Dependency results are ready, but automatic continuation cannot inject into a person’s chat. The controlling operator must resume the existing task.",
-          );
-          return await this.notify(task);
-        }
+      // Direct chats already receive the native child announcement. Do not race
+      // that continuation by terminating its task, or inject sessions.send there.
+      // The existing lease below still exposes a missing native return as stalled.
+      if (
+        ready &&
+        resumableSession(task.sessionKey) &&
+        owner.run !== "active" &&
+        !task.continuation
+      ) {
         task.continuation = { state: "sending", completed: completed.map(({ runId }) => runId) };
         await this.save(task);
         // Refresh cancellation, session identity, and turn liveness immediately before effect.
@@ -727,7 +827,7 @@ export class FollowThrough {
         // Observation failures must not leave an owned command silently waiting.
         // Keep approval/review gates and terminal outcomes intact. If storage or
         // cancellation reads also fail, service health remains the honest fallback.
-        if (["running", "waiting_dependency"].includes(task.status)) {
+        if (["running", "waiting_dependency", "waiting_native_result"].includes(task.status)) {
           try {
             await this.stall(
               task,

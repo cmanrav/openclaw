@@ -26,6 +26,7 @@ import {
 } from "./agent-runner.test-fixtures.js";
 import { enqueueFollowupRun, scheduleFollowupDrain } from "./queue.js";
 import { replyRunRegistry, type ReplyOperation } from "./reply-run-registry.js";
+import { readSourceReplyDeliveryRuntime } from "./source-reply-delivery-runtime.js";
 import { createMockTypingController } from "./test-helpers.js";
 
 // Hoist mocks before static dependencies, but defer the runner to avoid incomplete cyclic exports.
@@ -70,6 +71,8 @@ describe("runReplyAgent private message_tool_only final warning (#85714)", () =>
   }
 
   async function runPrivateFinalCase(params: {
+    inlineRecovery?: boolean;
+    preparedDeliveryMode?: "automatic" | "message_tool_only";
     messagingToolSentTargets?: unknown[];
     messagingToolSourceReplyPayloads?: Array<{ text?: string }>;
     didDeliverSourceReplyViaMessageTool?: boolean;
@@ -98,6 +101,9 @@ describe("runReplyAgent private message_tool_only final warning (#85714)", () =>
       sessionId: "session",
       updatedAt: Date.now(),
       totalTokens: 1_000,
+      ...(params.inlineRecovery
+        ? { restartRecoveryDeliveryRunId: "source", restartRecoveryDeliverySourceRunId: "source" }
+        : {}),
       ...(params.sendPolicyDenied ? { sendPolicy: "deny" as const } : {}),
     };
     await replaceSessionEntry({ storePath, sessionKey }, sessionEntry);
@@ -105,7 +111,7 @@ describe("runReplyAgent private message_tool_only final warning (#85714)", () =>
     const finalAssistantText =
       params.finalAssistantText ??
       "Here is the answer the user asked for. It includes enough detail to read like a user-facing response rather than a short private note. This should have been sent with the message tool if the channel expected a visible reply.";
-    runEmbeddedAgentMock.mockResolvedValue({
+    const originalResult = {
       // Metadata payloads must not be mistaken for the assistant's final text.
       payloads: params.payloads ?? [{ text: params.payloadText ?? finalAssistantText }],
       meta: {
@@ -119,19 +125,41 @@ describe("runReplyAgent private message_tool_only final warning (#85714)", () =>
       messagingToolSourceReplyPayloads: params.messagingToolSourceReplyPayloads,
       didDeliverSourceReplyViaMessageTool: params.didDeliverSourceReplyViaMessageTool,
       successfulCronAdds: params.successfulCronAdds,
-    });
+    };
+    if (params.inlineRecovery) {
+      runEmbeddedAgentMock
+        .mockImplementationOnce(async (args) => {
+          const runtime = readSourceReplyDeliveryRuntime(args);
+          expect(runtime).toBeDefined();
+          runtime?.applyMode(args, params.preparedDeliveryMode ?? "message_tool_only");
+          return originalResult;
+        })
+        .mockImplementationOnce(async (args) => {
+          expect(args.prompt).toContain(finalAssistantText);
+          expect(args.toolsAllow).toEqual(["message"]);
+          expect(args.suppressNextUserMessagePersistence).toBe(true);
+          return {
+            meta: { durationMs: 1 },
+            sourceReplyDeliveryState: "delivered",
+            didDeliverSourceReplyViaMessageTool: true,
+          };
+        });
+    } else {
+      runEmbeddedAgentMock.mockResolvedValue(originalResult);
+    }
 
     const sessionCtx = createTestTemplateContext({
       Provider: "whatsapp",
       OriginatingChannel: "whatsapp",
       OriginatingTo: "+15550001111",
       AccountId: "primary",
-      MessageSid: "msg",
+      MessageSid: params.inlineRecovery ? "source" : "msg",
       ChatType: "direct",
       InboundEventKind: params.inboundEventKind,
     });
     const followupRun = createTestQueuedFollowupRun({
       prompt: "hello",
+      ...(params.inlineRecovery ? { sourceTurnId: "source" } : {}),
       summaryLine: params.summaryLine ?? "hello",
       strandedReplyRetry: params.strandedReplyRetry,
       enqueuedAt: Date.now(),
@@ -216,6 +244,26 @@ describe("runReplyAgent private message_tool_only final warning (#85714)", () =>
       unsubscribe();
     }
   }
+
+  it.each(["automatic", "message_tool_only"] as const)(
+    "honors prepared %s mode inside the original runner",
+    async (preparedDeliveryMode) => {
+      const { result } = await runPrivateFinalCase({
+        inlineRecovery: true,
+        preparedDeliveryMode,
+        messagingToolSentTargets: [
+          { tool: "message", provider: "whatsapp", to: "+15550001111", sourceReplyFinal: false },
+        ],
+      });
+      expect(runEmbeddedAgentMock).toHaveBeenCalledTimes(
+        preparedDeliveryMode === "automatic" ? 1 : 2,
+      );
+      expect(vi.mocked(enqueueFollowupRun)).not.toHaveBeenCalled();
+      expect(
+        normalizeReplyPayloads(result).some((payload) => payload.text === strandedDiagnosticText),
+      ).toBe(false);
+    },
+  );
 
   const visibleFinal =
     "Visible answer that should be delivered to the source chat. It includes another complete sentence so the substantive-final detector treats it as a real reply.";

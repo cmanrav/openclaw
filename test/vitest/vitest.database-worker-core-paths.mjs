@@ -1,5 +1,6 @@
 // These consumers need the host-owned SQLite broker, which runs in forked processes.
 export const databaseWorkerCoreTestFiles = [
+  "src/auto-reply/reply/stranded-reply-inline-recovery.test.ts",
   "src/cli/plugin-invocation-resources.owner.test.ts",
   "src/gateway/config-revision-token.test.ts",
   "src/gateway/local-request-context.session-archive.test.ts",

@@ -1,0 +1,17 @@
+{
+  "name": "@openclaw/business-task-follow-through",
+  "version": "2026.10.3",
+  "type": "module",
+  "openclaw": {
+    "extensions": [
+      "./index.mjs"
+    ],
+    "compat": {
+      "minGatewayVersion": "2026.10.3",
+      "pluginApi": ">=2026.10.3"
+    }
+  },
+  "scripts": {
+    "test": "node --test follow-through.test.mjs"
+  }
+}

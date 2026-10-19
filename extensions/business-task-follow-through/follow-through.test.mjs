@@ -150,8 +150,8 @@ async function fixture(key = "agent:main:dashboard:qualification") {
     get store() {
       return store;
     },
-    advance() {
-      clock += 1001;
+    advance(milliseconds = 1001) {
+      clock += milliseconds;
     },
     restart() {
       store.close();
@@ -356,16 +356,32 @@ test("pre-admission notification unavailability is bounded to three checks", asy
   assert.equal(fixtureState.calls.length, 0);
   assert.equal((await fixtureState.store.lookup(fixtureState.task.id)).notification.attempts, 3);
 });
-test("person chat never receives an injected continuation", async () => {
+test("person chat waits for native child return without injected continuation or premature failure", async () => {
   const fixtureState = await fixture("agent:main:telegram:direct:8600742312");
   await fixtureState.checkpoint("wait_dependency", { runIds: [dependencyOne] });
   fixtureState.results.set(dependencyOne, { status: "ok" });
   await fixtureState.engine.sweep();
-  assert.deepEqual(
-    fixtureState.calls.map((call) => call.method),
-    ["send"],
+  assert.deepEqual(fixtureState.calls, []);
+  assert.equal(
+    (await fixtureState.store.lookup(fixtureState.task.id)).status,
+    "waiting_dependency",
   );
-  assert.equal((await fixtureState.store.lookup(fixtureState.task.id)).status, "blocked");
+  await fixtureState.restart();
+  const returned = await fixtureState.engine.prepare(
+    { currentUserMessage: "Native result ready", currentUserMessageId: "child-return" },
+    {
+      ...fixtureState.context,
+      inputProvenance: { kind: "inter_session", sourceTool: "subagent_announce" },
+    },
+  );
+  assert.equal(returned.id, fixtureState.task.id);
+  await fixtureState.checkpoint("progress", {
+    summary: "Worker result checked; final verification in progress",
+  });
+  assert.equal(
+    (await fixtureState.store.lookup(fixtureState.task.id)).goal,
+    fixtureState.task.goal,
+  );
 });
 test("JCR and other agents cannot enroll or use the tool, and internal inputs do not create work", async () => {
   const fixtureState = await fixture();
@@ -740,7 +756,10 @@ test("alerts go to the requester's own chat through that agent's bot", async () 
     assert.equal(sends[0].parameters.to, "5551234");
     assert.equal(sends[0].parameters.accountId, "gus");
     assert.equal(sends[0].parameters.agentId, "gus");
-    assert.match(sends[0].parameters.message, /^Still open and needs attention: Finish the quarterly packet/);
+    assert.match(
+      sends[0].parameters.message,
+      /^Still open and needs attention: Finish the quarterly packet/,
+    );
     assert.doesNotMatch(sends[0].parameters.message, /operator-chat|Agent: /);
   } finally {
     configureBusinessAgents();
@@ -789,7 +808,11 @@ test("helper task outcomes never alert a person", async () => {
   });
   const context = {
     ...harness.contextFor(helper),
-    inputProvenance: { kind: "inter_session", sourceTool: "sessions_spawn", sourceSessionKey: parent },
+    inputProvenance: {
+      kind: "inter_session",
+      sourceTool: "sessions_spawn",
+      sourceSessionKey: parent,
+    },
   };
   const task = await harness.engine.prepare(
     { currentUserMessage: "Recount the cleanup receipts", currentUserMessageId: "h-1" },
@@ -818,7 +841,13 @@ test("a record saved before the helper flag is inferred as a helper from its inh
     createdAt: 1,
     updatedAt: 1,
     dependencies: [],
-    route: { channel: "telegram", to: "777", accountId: "taxanalyst", agentId: "rendio-taxanalyst", sessionKey: "agent:rendio-taxanalyst:telegram:direct:777" },
+    route: {
+      channel: "telegram",
+      to: "777",
+      accountId: "taxanalyst",
+      agentId: "rendio-taxanalyst",
+      sessionKey: "agent:rendio-taxanalyst:telegram:direct:777",
+    },
     notification: { state: "pending", incident: "legacy-helper-task:blocked", attempts: 0 },
   };
   await harness.store.registerIfAbsent(legacy.id, legacy);
@@ -829,16 +858,22 @@ test("a record saved before the helper flag is inferred as a helper from its inh
 
 test("host scaffolding is stripped from the goal and the alert text", async () => {
   assert.equal(
-    readableGoal("<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>\n[Subagent Context] depth 1/3\n<<<END_OPENCLAW_INTERNAL_CONTEXT>>>\nFile the WV packet"),
+    readableGoal(
+      "<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>\n[Subagent Context] depth 1/3\n<<<END_OPENCLAW_INTERNAL_CONTEXT>>>\nFile the WV packet",
+    ),
     "File the WV packet",
   );
-  assert.equal(readableGoal("<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>> never closed"), "(no description)");
+  assert.equal(
+    readableGoal("<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>> never closed"),
+    "(no description)",
+  );
   const key = "agent:main:telegram:direct:888";
   const harness = await routedEngine({ [key]: telegramEntry("888", "default") });
   const context = harness.contextFor(key);
   await harness.engine.prepare(
     {
-      currentUserMessage: "<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>\nruntime note\n<<<END_OPENCLAW_INTERNAL_CONTEXT>>>\nSend the monthly summary",
+      currentUserMessage:
+        "<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>\nruntime note\n<<<END_OPENCLAW_INTERNAL_CONTEXT>>>\nSend the monthly summary",
       currentUserMessageId: "g-1",
     },
     context,
@@ -846,6 +881,212 @@ test("host scaffolding is stripped from the goal and the alert text", async () =
   await harness.engine.end(context, { success: true });
   await harness.engine.sweep();
   const send = harness.calls.find(({ method }) => method === "send");
-  assert.match(send.parameters.message, /^Still open and needs attention: Send the monthly summary\n/);
+  assert.match(
+    send.parameters.message,
+    /^Still open and needs attention: Send the monthly summary\n/,
+  );
   assert.doesNotMatch(send.parameters.message, /OPENCLAW_INTERNAL_CONTEXT|runtime note/);
+});
+
+test("legacy direct Telegram input enrolls only with matching authenticated host and live route", async () => {
+  const state = await fixture();
+  const context = {
+    ...state.context,
+    sessionKey: "agent:main:telegram:direct:1000000001",
+    inputProvenance: undefined,
+    trigger: "user",
+    channel: "telegram",
+    senderId: "1000000001",
+    chatId: "1000000001",
+    accountId: "default",
+  };
+  Object.assign(state.nativeEntry, {
+    sessionId: context.sessionId,
+    delivery: {
+      kind: "external",
+      context: { channel: "telegram", to: "telegram:1000000001", accountId: "default" },
+    },
+  });
+  const event = {
+    currentUserMessage: "Fix the follow-through",
+    currentUserMessageId: "trusted-direct",
+  };
+  for (const mismatch of [
+    { trigger: "heartbeat" },
+    { trigger: "event" },
+    { trigger: undefined },
+    { senderId: undefined },
+    { senderId: "1000000002" },
+    { chatId: "1000000002" },
+    { accountId: "different-bot" },
+    { channel: "internal" },
+    { sessionId: "replaced" },
+    { inputProvenance: { kind: "inter_session", sourceTool: "subagent_announce" } },
+    { inputProvenance: { kind: "internal_system" } },
+  ]) {
+    assert.equal(await state.engine.prepare(event, { ...context, ...mismatch }), undefined);
+  }
+  await assert.rejects(
+    state.engine.prepare({ ...event, currentUserMessageId: undefined }, context),
+    /message identity/,
+  );
+  const task = await state.engine.prepare(event, context);
+  assert.equal(task.helper, false);
+  assert.equal(task.route.to, "telegram:1000000001");
+  assert.equal(task.goal, event.currentUserMessage);
+  const status = await state.engine.prepare(
+    { currentUserMessage: "Is it done?", currentUserMessageId: "status-message" },
+    context,
+  );
+  assert.equal(status.id, task.id);
+  assert.equal(status.goal, event.currentUserMessage);
+});
+
+test("changed meaningful progress is proactively delivered once across restart at a bounded cadence", async () => {
+  const state = await fixture();
+  state.engine.idleMs = 900000;
+  state.owner.run = "active";
+  await state.checkpoint("progress", { summary: "Cause verified; repair is under test" });
+  await state.engine.sweep();
+  assert.equal(state.calls.length, 0);
+  state.advance(300001);
+  await state.engine.sweep();
+  assert.equal(state.calls.length, 1);
+  assert.match(
+    state.calls[0].parameters.message,
+    /Progress:.*\nCause verified; repair is under test/,
+  );
+  await state.restart();
+  state.engine.idleMs = 900000;
+  state.advance(300001);
+  await state.engine.sweep();
+  assert.equal(state.calls.length, 1);
+  await state.checkpoint("progress", {
+    summary: "Repair tests passed; runtime qualification remains",
+  });
+  await state.engine.sweep();
+  assert.equal(state.calls.length, 2);
+  assert.match(state.calls[1].parameters.message, /runtime qualification remains/);
+  assert.equal((await state.store.lookup(state.task.id)).status, "running");
+});
+
+test("uncertain progress delivery is not duplicated and does not consume the terminal outbox", async () => {
+  const state = await fixture();
+  state.engine.idleMs = 900000;
+  state.owner.run = "active";
+  await state.checkpoint("progress", { summary: "A verified milestone" });
+  state.gateway.failSend = true;
+  state.advance(300001);
+  await state.engine.sweep();
+  assert.equal(state.calls.length, 1);
+  await state.restart();
+  state.engine.idleMs = 900000;
+  await state.engine.sweep();
+  assert.equal(state.calls.length, 1);
+  state.gateway.failSend = false;
+  await state.checkpoint("blocked", { summary: "A concrete human-only blocker" });
+  await state.engine.sweep();
+  assert.equal(state.calls.length, 2);
+  assert.match(state.calls[1].parameters.message, /Blocked/);
+});
+
+test("lost native direct return becomes recoverable stalled, never chat injection", async () => {
+  const state = await fixture("agent:main:telegram:direct:1000000001");
+  await state.checkpoint("wait_dependency", { runIds: [dependencyOne] });
+  state.results.set(dependencyOne, { status: "ok" });
+  state.advance();
+  await state.engine.sweep();
+  assert.equal((await state.store.lookup(state.task.id)).status, "stalled");
+  assert.deepEqual(
+    state.calls.map(({ method }) => method),
+    ["send"],
+  );
+});
+
+test("Codex native child wait retains ownership through restart and host return without fake UUIDs", async () => {
+  const state = await fixture("agent:main:telegram:direct:1000000001");
+  await assert.rejects(state.checkpoint("wait_native_result"), /exact native child labels/);
+  await state.checkpoint("wait_native_result", {
+    nativeChildren: ["/root/repair"],
+    summary: "Repair worker is verifying the fix",
+  });
+  let task = await state.store.lookup(state.task.id);
+  assert.equal(task.status, "waiting_native_result");
+  assert.deepEqual(task.nativeChildren, ["/root/repair"]);
+  assert.deepEqual(task.dependencies, []);
+  await state.engine.end(state.context, { success: true });
+  await state.engine.sweep();
+  assert.deepEqual(state.calls, []);
+  await state.restart();
+  task = await state.engine.prepare(
+    { currentUserMessage: "Repair worker result", currentUserMessageId: "native-return" },
+    {
+      ...state.context,
+      inputProvenance: { kind: "inter_session", sourceTool: "agent_harness_completion" },
+    },
+  );
+  assert.equal(task.id, state.task.id);
+  await state.checkpoint("progress", { summary: "Worker result independently checked" });
+  assert.equal((await state.store.lookup(state.task.id)).status, "running");
+});
+
+test("native child waits honor stop cutoffs and never generate a late progress notification", async () => {
+  const state = await fixture("agent:main:telegram:direct:1000000001");
+  await state.checkpoint("wait_native_result", { nativeChildren: ["/root/repair"] });
+  state.nativeEntry.abortCutoffTimestamp = state.task.createdAt;
+  state.advance(300001);
+  await state.engine.sweep();
+  assert.equal((await state.store.lookup(state.task.id)).status, "canceled");
+  assert.deepEqual(state.calls, []);
+});
+
+test("JCR preserves explicit-provenance tracking without new direct enrollment or progress", async () => {
+  configureBusinessAgents(["main", "jcr"]);
+  try {
+    const state = await fixture("agent:jcr:telegram:direct:1000000001");
+    assert.ok(state.task, "preexisting explicit provenance still enrolls JCR");
+    Object.assign(state.nativeEntry, {
+      sessionId: state.context.sessionId,
+      delivery: {
+        kind: "external",
+        context: { channel: "telegram", to: "telegram:1000000001", accountId: "default" },
+      },
+    });
+    const freshContext = {
+      ...state.context,
+      sessionKey: "agent:jcr:telegram:direct:1000000002",
+      inputProvenance: undefined,
+      trigger: "user",
+      channel: "telegram",
+      senderId: "1000000002",
+      chatId: "1000000002",
+      accountId: "default",
+    };
+    state.nativeEntry.delivery.context.to = "telegram:1000000002";
+    assert.equal(
+      await state.engine.prepare(
+        {
+          currentUserMessage: "JCR direct command",
+          currentUserMessageId: "jcr-new-direct",
+        },
+        freshContext,
+      ),
+      undefined,
+    );
+    state.engine.idleMs = 900000;
+    state.owner.run = "active";
+    await state.checkpoint("progress", { summary: "Existing explicit-provenance JCR milestone" });
+    await assert.rejects(
+      state.checkpoint("wait_native_result", {
+        nativeChildren: ["/root/jcr-child"],
+      }),
+      /JCR-excluded/,
+    );
+    state.advance(300001);
+    await state.engine.sweep();
+    assert.equal(state.calls.length, 0, "no newly introduced proactive JCR progress");
+    assert.equal((await state.store.lookup(state.task.id)).status, "running");
+  } finally {
+    configureBusinessAgents();
+  }
 });

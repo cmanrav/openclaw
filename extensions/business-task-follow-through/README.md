@@ -17,7 +17,11 @@ global `tools.alsoAllow` covers agents without their own `alsoAllow` list.
 
 A fresh external command or host-proven delegated assignment enrolls through
 `before_prompt_build`. Native spawn currently omits provenance; that path requires
-matching current session identity and a business `spawnedBy` entry. Completion
+matching current session identity and a business `spawnedBy` entry. Ordinary direct
+Telegram turns omit provenance: these enroll only when the host user trigger,
+Telegram channel, authenticated sender/chat IDs, direct session ID, and live
+session delivery route/account all agree. Explicit internal provenance is never
+upgraded to external, and prompt text is never an identity source. Completion
 messages do not create tasks. Internal status/approval turns retain the original
 command. Real approval must be evaluated by its original owner; no timer grants it.
 
@@ -42,11 +46,23 @@ receipt contract, not the truth of arbitrary reviewer attestations.
 
 ## Dependency continuation
 
+Codex `spawn_agent` children are not UUID OpenClaw run IDs. Use
+`wait_native_result` with the exact returned native child labels (`nativeChildren`)
+before yielding for that path. This retains the owned task without pretending the
+labels were verified run identities: the existing Codex native completion service
+owns child custody, deduplication and foreground/detached parent resumption. The
+plugin never sends a synthetic continuation for this state. Missing returns remain
+visible through the existing lease/stall path, and late genuine results can progress
+the same retained task. No child label grants business-action authorization.
+
 The service checks exact registered native run IDs. Complete prerequisites plus a
 message-paused sibling detect the reproduced frozen-batch circular wait. It admits
 one idempotent native `sessions.send` to the same original dashboard/subagent
 owner, after fresh identity, turn-liveness and cancellation checks. Admission is
-not completion. No person chat injection, new coordinator, cohort rewrite, direct
+not completion. Direct chats retain their owned wait while the existing native child-announcement
+path resumes their original owner; readiness alone is not a blocked outcome. If
+that return fails to arrive, the normal lease exposes a recoverable stall. No
+person chat injection, new coordinator, cohort rewrite, direct
 registry mutation, library operation, or blind replay is permitted. An uncertain
 continuation stalls for controlling-operator reconciliation, without duplicates.
 
@@ -60,7 +76,11 @@ using it: historical paused owners may already have completed.
 ## State and alerts
 
 OpenClaw's worker-backed keyed SQLite store owns state across turns/restarts.
-The service sweeps every 60 seconds. Incident outbox state is durable before send.
+The service sweeps every 60 seconds. Classified, changed progress summaries are
+reported at most every five minutes through a separate durable outbox. Unchanged
+summaries, helper work, approval waits and canceled tasks do not generate progress
+messages. This is checkpoint evidence, not a timer's claim that work is progressing.
+Incident and progress outbox state is durable before send.
 Retries are limited to three pre-admission unavailable checks. A send with an
 uncertain receipt is not blindly repeated: service health/logs require operator
 reconciliation. This preserves at-most-one dispatch per incident, not a promise

@@ -77,3 +77,107 @@ it.each(["empty", "retained", "expired"] as const)(
     );
   },
 );
+
+it("preserves complete receipt bodies and store partitions during selective recovery", async () => {
+  await withOpenClawTestState(
+    { layout: "state-only", prefix: "cron-history-payload-recovery-" },
+    async (state) => {
+      const database = openOpenClawStateDatabase();
+      const nowMs = 10 * 24 * 60 * 60_000;
+      const startedAt = nowMs - 10 * 60_000;
+      const summary = "receipt evidence ".repeat(64_000);
+      const recoveredDetail = { kind: "cron-run", storeKey: "right", receipt: { body: summary } };
+      const lostDetail = { kind: "cron-run", storeKey: "lost", extra: ["preserve", { value: 7 }] };
+      const insert = database.db.prepare(
+        "INSERT INTO task_runs (task_id, runtime, source_id, run_id, owner_key, scope_kind, task, delivery_status, notify_policy, created_at, started_at, ended_at, status, terminal_summary, detail_json) VALUES (?, 'cron', ?, ?, '', 'system', 'history', 'not_applicable', 'silent', ?, ?, ?, ?, ?, ?)",
+      );
+      insert.run(
+        "wrong-store",
+        "job",
+        "run",
+        startedAt - 2,
+        startedAt,
+        startedAt + 1,
+        "failed",
+        "wrong",
+        JSON.stringify({ kind: "cron-run", storeKey: "wrong" }),
+      );
+      const sourceJson = JSON.stringify(recoveredDetail, null, 2);
+      insert.run(
+        "source",
+        "job",
+        "run",
+        startedAt - 1,
+        startedAt,
+        startedAt + 1,
+        "succeeded",
+        summary,
+        sourceJson,
+      );
+      insert.run(
+        "recover",
+        "job",
+        "run",
+        startedAt,
+        startedAt,
+        null,
+        "running",
+        "old",
+        JSON.stringify({ kind: "cron-run", storeKey: "right", old: true }),
+      );
+      insert.run(
+        "lost",
+        "other-job",
+        "other-run",
+        startedAt,
+        startedAt,
+        null,
+        "running",
+        "unfinished evidence",
+        JSON.stringify(lostDetail),
+      );
+      insert.run(
+        "protected",
+        "protected-job",
+        "protected-run",
+        startedAt,
+        startedAt,
+        null,
+        "running",
+        summary,
+        sourceJson,
+      );
+      const result = runWithSqliteWorkerStateContext(
+        { environment: { OPENCLAW_STATE_DIR: state.stateDir } },
+        () =>
+          maintainCronRunHistoryInWorker(database, {
+            snapshot: { nowMs, protectedJobIds: ["protected-job"] },
+          }),
+      );
+      expect(result.outcome).toMatchObject({ reconciled: 2, pruned: 0 });
+      const read = database.db.prepare(
+        "SELECT status, terminal_summary, detail_json FROM task_runs WHERE task_id = ?",
+      );
+      expect(read.get("recover")).toEqual({
+        status: "succeeded",
+        terminal_summary: summary,
+        detail_json: JSON.stringify(recoveredDetail),
+      });
+      expect(read.get("lost")).toEqual({
+        status: "lost",
+        terminal_summary: "unfinished evidence",
+        detail_json: JSON.stringify(lostDetail),
+      });
+      expect(read.get("source")).toEqual({
+        status: "succeeded",
+        terminal_summary: summary,
+        detail_json: sourceJson,
+      });
+      expect(read.get("protected")).toEqual({
+        status: "running",
+        terminal_summary: summary,
+        detail_json: sourceJson,
+      });
+    },
+  );
+});

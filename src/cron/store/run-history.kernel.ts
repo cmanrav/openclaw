@@ -5,6 +5,7 @@ import {
   executeSqliteQuerySync,
   executeSqliteQueryTakeFirstSync,
   getNodeSqliteKysely,
+  iterateSqliteQuerySync,
 } from "../../infra/kysely-sync.js";
 import { normalizeSqliteNumber } from "../../infra/sqlite-number.js";
 import type { DB } from "../../state/openclaw-state-db.generated.js";
@@ -67,6 +68,7 @@ export function readCronRunRecordsInDatabase(
   db: DatabaseSync,
   jobId?: string,
   runId?: string,
+  options: { metadataOnly?: boolean; recordId?: string } = {},
 ): CronRunRecord[] {
   let select = query(db)
     .selectFrom("task_runs")
@@ -99,7 +101,12 @@ export function readCronRunRecordsInDatabase(
   if (runId !== undefined) {
     select = select.where("run_id", "=", runId);
   }
-  return executeSqliteQuerySync(db, select).rows.map((row) => {
+  if (options.recordId !== undefined) {
+    select = select.where("task_id", "=", options.recordId);
+  }
+  const records: CronRunRecord[] = [];
+  // Housekeeping must not retain every raw receipt while parsing the next one.
+  for (const row of iterateSqliteQuerySync(db, select)) {
     // These released columns remain part of row admission even when Cron does not expose them.
     validateRetainedEnum(row.scope_kind, ["session", "system"], "scope kind");
     if (row.terminal_outcome !== null && row.terminal_outcome !== "") {
@@ -129,23 +136,33 @@ export function readCronRunRecordsInDatabase(
       "notify policy",
     );
 
-    return normalizeCronRunTimestamps({
-      id: row.task_id,
-      jobId: row.source_id || null,
-      runId: row.run_id || undefined,
-      agentId: row.agent_id || undefined,
-      sessionKey: row.child_session_key || undefined,
-      createdAt: normalizeSqliteNumber(row.created_at) ?? 0,
-      startedAt: normalizeSqliteNumber(row.started_at),
-      endedAt: normalizeSqliteNumber(row.ended_at),
-      lastEventAt: normalizeSqliteNumber(row.last_event_at),
-      cleanupAfter: normalizeSqliteNumber(row.cleanup_after),
-      status: row.status,
-      error: row.error || undefined,
-      summary: row.terminal_summary ?? undefined,
-      detail: row.detail_json === null ? undefined : parseCronRunDetailJson(row.detail_json),
-    });
-  });
+    const detail = row.detail_json === null ? undefined : parseCronRunDetailJson(row.detail_json);
+    const metadata = isRecord(detail)
+      ? {
+          ...(typeof detail.storeKey === "string" ? { storeKey: detail.storeKey } : {}),
+          ...(detail.kind === "cron-run" ? { kind: "cron-run" } : {}),
+        }
+      : undefined;
+    records.push(
+      normalizeCronRunTimestamps({
+        id: row.task_id,
+        jobId: row.source_id || null,
+        runId: row.run_id || undefined,
+        agentId: row.agent_id || undefined,
+        sessionKey: row.child_session_key || undefined,
+        createdAt: normalizeSqliteNumber(row.created_at) ?? 0,
+        startedAt: normalizeSqliteNumber(row.started_at),
+        endedAt: normalizeSqliteNumber(row.ended_at),
+        lastEventAt: normalizeSqliteNumber(row.last_event_at),
+        cleanupAfter: normalizeSqliteNumber(row.cleanup_after),
+        status: row.status,
+        error: row.error || undefined,
+        summary: options.metadataOnly ? undefined : (row.terminal_summary ?? undefined),
+        detail: options.metadataOnly ? metadata : detail,
+      }),
+    );
+  }
+  return records;
 }
 
 /** Caller owns the exact transaction. History never authorizes execution or receipt adoption. */
@@ -336,6 +353,7 @@ export function planCronRunHistoryMaintenance(
   records: readonly CronRunRecord[],
   now: number,
   protectedJobIds: ReadonlySet<string>,
+  hydrate: (record: CronRunRecord) => CronRunRecord = (record) => record,
 ) {
   const key = (row: CronRunRecord) =>
     JSON.stringify([cronRunRecordStoreKey(row), row.jobId, row.runId]);
@@ -361,15 +379,17 @@ export function planCronRunHistoryMaintenance(
         : undefined;
     let next: CronRunRecord;
     if (recovery) {
-      const endedAt = resolveCronRunRecordTimestamp(recovery);
+      const original = hydrate(row);
+      const recovered = hydrate(recovery);
+      const endedAt = resolveCronRunRecordTimestamp(recovered);
       next = normalizeCronRunTimestamps({
-        ...row,
-        status: recovery.status,
+        ...original,
+        status: recovered.status,
         endedAt,
         lastEventAt: Math.max(row.lastEventAt ?? -Infinity, recovery.lastEventAt ?? endedAt),
-        error: recovery.error,
-        summary: recovery.summary ?? row.summary,
-        detail: recovery.detail === undefined ? row.detail : recovery.detail,
+        error: recovered.error,
+        summary: recovered.summary ?? original.summary,
+        detail: recovered.detail === undefined ? original.detail : recovered.detail,
       });
       next.cleanupAfter ??= resolveCronRunRecordTimestamp(next) + RETENTION_MS;
     } else {
@@ -379,7 +399,7 @@ export function planCronRunHistoryMaintenance(
       const endedAt = row.endedAt ?? now;
       const expiry = endedAt + LOST_RETENTION_MS;
       next = normalizeCronRunTimestamps({
-        ...row,
+        ...hydrate(row),
         status: "lost",
         endedAt,
         lastEventAt: Math.max(now, row.lastEventAt ?? -Infinity),

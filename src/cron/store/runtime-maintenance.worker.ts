@@ -28,7 +28,9 @@ export function maintainCronRunHistoryInWorker(
   database: OpenClawStateDatabase,
   input: { snapshot: CronRuntimeMutationContracts["cron.maintainHistory"]["snapshot"] },
 ): CronRuntimeWorkerOperations["cron.maintainHistory"]["output"] {
-  const records = readCronRunRecordsInDatabase(database.db);
+  const records = readCronRunRecordsInDatabase(database.db, undefined, undefined, {
+    metadataOnly: true,
+  });
   const jobIds = [
     ...new Set(
       records.flatMap((row) =>
@@ -48,7 +50,16 @@ export function maintainCronRunHistoryInWorker(
       : [];
   const { nowMs, protectedJobIds } = input.snapshot;
   const protectedJobs = new Set([...protectedJobIds, ...receipts.map((receipt) => receipt.jobId)]);
-  const plan = planCronRunHistoryMaintenance(records, nowMs, protectedJobs);
+  // Full receipt bodies are needed only for rows whose recovery will write them back.
+  const plan = planCronRunHistoryMaintenance(records, nowMs, protectedJobs, (record) => {
+    const full = readCronRunRecordsInDatabase(database.db, undefined, undefined, {
+      recordId: record.id,
+    })[0];
+    if (!full) {
+      throw new Error(`Cron recovery row disappeared during maintenance: ${record.id}`);
+    }
+    return full;
+  });
   if (plan.reconciliations.length === 0 && !plan.prune) {
     return { outcome: { reconciled: 0, pruned: 0, nextSweepAtMs: plan.nextSweepAtMs } };
   }
